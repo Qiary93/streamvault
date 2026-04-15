@@ -1,0 +1,95 @@
+{
+  "theme": "Dark/Blue",
+  "archetype": "7 (Electric & Neon - Modified to Electric Blue)",
+  "colors": {
+    "background": "#05050A",
+    "surface": "#0F0F16",
+    "surface_hover": "#1A1A24",
+    "primary": "#00E5FF",
+    "primary_hover": "#00B3CC",
+    "secondary": "#292938",
+    "text_primary": "#FFFFFF",
+    "text_secondary": "#A0A0AB",
+    "border": "rgba(255, 255, 255, 0.08)",
+    "alert": "#FF3B30",
+    "success": "#00E5FF"
+  },
+  "fonts": {
+    "heading": "Outfit",
+    "body": "Manrope",
+    "google_fonts_url": "https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Outfit:wght@400;500;700;900&display=swap"
+  },
+  "typography": {
+    "h1": "text-4xl lg:text-6xl font-black tracking-tighter",
+    "h2": "text-2xl lg:text-4xl font-bold tracking-tight",
+    "h3": "text-xl lg:text-2xl font-bold",
+    "body": "text-sm lg:text-base leading-relaxed text-[#A0A0AB]",
+    "labels": "uppercase text-xs tracking-[0.2em] text-[#00E5FF] font-bold"
+  },
+  "layout": {
+    "spacing": "dense",
+    "grid_strategy": "Control Room Grid",
+    "navigation": "Fixed left sidebar (w-64 desktop, collapsable to w-16), sticky top header with glassmorphism (backdrop-blur-xl bg-[#05050A]/70)",
+    "stream_view": "grid grid-cols-1 lg:grid-cols-12 gap-0 lg:gap-4. Video wrapper: col-span-1 lg:col-span-9. Chat wrapper: col-span-1 lg:col-span-3 h-[60vh] lg:h-[calc(100vh-80px)]."
+  },
+  "components": {
+    "cards": "bg-[#0F0F16] border border-white/5 rounded-xl overflow-hidden hover:-translate-y-1 transition-transform duration-200",
+    "buttons": {
+      "primary": "bg-[#00E5FF] text-black font-bold rounded-md px-6 py-2 hover:bg-[#00B3CC] transition-colors",
+      "secondary": "bg-[#292938] text-white font-medium rounded-md px-6 py-2 hover:bg-[#3D3D52] transition-colors"
+    },
+    "chat": "bg-[#0F0F16] border-l border-white/5 flex flex-col. Messages should have high-contrast username colors. Input area solid dark.",
+    "avatars": "rounded-full object-cover ring-2 ring-transparent. If live: ring-[#00E5FF] ring-offset-2 ring-offset-[#05050A]"
+  },
+  "motion": {
+    "hover": "transition-all duration-200 ease-in-out",
+    "active": "scale-95"
+  },
+  "media": {
+    "avatars": [
+      {
+        "url": "https://images.pexels.com/photos/9072304/pexels-photo-9072304.jpeg",
+        "description": "Male gamer avatar"
+      },
+      {
+        "url": "https://images.pexels.com/photos/30083578/pexels-photo-30083578.jpeg",
+        "description": "Female gamer avatar"
+      }
+    ],
+    "streams": [
+      {
+        "url": "https://images.unsplash.com/photo-1757774636742-0a5dc7e5c07a",
+        "description": "FPS game stream placeholder"
+      },
+      {
+        "url": "https://images.pexels.com/photos/14266493/pexels-photo-14266493.jpeg",
+        "description": "Esports tournament stream placeholder"
+      }
+    ],
+    "categories": [
+      {
+        "url": "https://images.pexels.com/photos/1718758/pexels-photo-1718758.jpeg",
+        "description": "IRL / Just Chatting / Neon City cover"
+      },
+      {
+        "url": "https://images.pexels.com/photos/6301776/pexels-photo-6301776.jpeg",
+        "description": "Music / Concerts cover"
+      }
+    ],
+    "hero_background": {
+      "url": "https://images.pexels.com/photos/9072205/pexels-photo-9072205.jpeg",
+      "description": "Hero section background for landing page or discover section"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow the Electric & Neon archetype modified for Dark/Blue theme. Use #05050A for backgrounds, not generic Tailwind gray.",
+    "Use 'Outfit' for all headings and 'Manrope' for body text. Add the Google Fonts link to your HTML file.",
+    "Ensure the stream player takes up maximum space (Control Room grid), and the chat is a distinct, readable column on the right.",
+    "Use Phosphor Icons (@phosphor-icons/react) for sharp, tech-oriented iconography.",
+    "Never use pure white (#FFFFFF) for body text; use the secondary text color (#A0A0AB) to reduce eye strain, reserving pure white for headings.",
+    "All interactive elements MUST include a data-testid attribute (e.g., data-testid='chat-submit-button').",
+    "Do not build HTML datepickers/dropdowns; use shadcn components.",
+    "CRITICAL: The frontend is standard React (.js/.jsx files), not TypeScript (.tsx). Generate standard Javascript files only.",
+    "Build the core live streaming UI structure: Sidebar, Header, Stream Player Main Area, and live Chat Column."
+  ]
+}
