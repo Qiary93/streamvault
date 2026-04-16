@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { Broadcast, Eye, CurrencyDollar, Users, Plus, X, Star, Copy, Check, Record, Stop } from '@phosphor-icons/react';
+import { Broadcast, Eye, CurrencyDollar, Users, Plus, X, Star, Copy, Check, Record, Stop, Link as LinkIcon } from '@phosphor-icons/react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
@@ -19,6 +19,8 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
   const [streamKeyCopied, setStreamKeyCopied] = useState(false);
+  const [whipUrlCopied, setWhipUrlCopied] = useState(false);
+  const [whipTokenCopied, setWhipTokenCopied] = useState(false);
   const [recording, setRecording] = useState(false);
   const [streamForm, setStreamForm] = useState({
     title: '',
@@ -311,29 +313,113 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* Stream Key */}
-      <div className="bg-[#0F0F16] border border-white/5 rounded-xl p-6" data-testid="stream-key-section">
-        <h2 className="text-lg font-semibold text-white mb-4">Stream Key</h2>
-        <div className="p-4 bg-[#1A1A24] rounded-lg">
-          <div className="flex items-center justify-between mb-2">
-            <p className="text-sm text-[#A0A0AB]">Your Stream Key</p>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={copyStreamKey}
-              className="text-[#00E5FF] hover:text-[#00B3CC] hover:bg-white/10 gap-2"
-              data-testid="copy-stream-key-btn"
-            >
-              {streamKeyCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-              {streamKeyCopied ? 'Copied!' : 'Copy'}
-            </Button>
+      {/* OBS Setup & Stream Credentials */}
+      <div className="bg-[#0F0F16] border border-white/5 rounded-xl p-6" data-testid="obs-setup-section">
+        <div className="flex items-center gap-3 mb-6">
+          <LinkIcon className="w-6 h-6 text-[#00E5FF]" />
+          <div>
+            <h2 className="text-lg font-semibold text-white">OBS Setup</h2>
+            <p className="text-sm text-[#A0A0AB]">Connect your streaming software to StreamVault</p>
           </div>
-          <code className="text-sm text-[#00E5FF] bg-[#292938] px-4 py-3 rounded-lg block font-mono break-all" data-testid="stream-key-display">
-            {user?.stream_key || 'Loading...'}
-          </code>
-          <p className="text-xs text-[#A0A0AB] mt-3">
-            Use this key in your streaming software (OBS, Streamlabs, etc.) to broadcast to StreamVault.
-          </p>
+        </div>
+
+        {/* Step-by-step instructions */}
+        <div className="mb-6 p-4 bg-[#1A1A24] rounded-lg border border-[#00E5FF]/20">
+          <h3 className="text-sm font-bold text-[#00E5FF] uppercase tracking-wider mb-3">Quick Setup Guide</h3>
+          <ol className="text-sm text-[#A0A0AB] space-y-2 list-decimal pl-5">
+            <li>Open <span className="text-white font-medium">OBS Studio</span> &rarr; Settings &rarr; Stream</li>
+            <li>Set Service to <span className="text-white font-medium">WHIP</span></li>
+            <li>Paste the <span className="text-white font-medium">Server URL</span> below into the "Server" field</li>
+            <li>Paste the <span className="text-white font-medium">Bearer Token</span> below into the "Bearer Token" field</li>
+            <li>Click <span className="text-white font-medium">Apply</span>, then <span className="text-white font-medium">Start Streaming</span> in OBS</li>
+          </ol>
+        </div>
+
+        <div className="space-y-4">
+          {/* WHIP Server URL */}
+          <div className="p-4 bg-[#1A1A24] rounded-lg">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-sm font-medium text-white">Server URL (WHIP)</p>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  const url = myStream?.whip_url || '';
+                  if (url) {
+                    navigator.clipboard.writeText(url);
+                    setWhipUrlCopied(true);
+                    toast.success('Server URL copied!');
+                    setTimeout(() => setWhipUrlCopied(false), 2000);
+                  }
+                }}
+                className="text-[#00E5FF] hover:text-[#00B3CC] hover:bg-white/10 gap-2"
+                data-testid="copy-whip-url-btn"
+              >
+                {whipUrlCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                {whipUrlCopied ? 'Copied!' : 'Copy'}
+              </Button>
+            </div>
+            <code className="text-sm text-[#00E5FF] bg-[#292938] px-4 py-3 rounded-lg block font-mono break-all" data-testid="whip-url-display">
+              {myStream?.whip_url || 'Start a stream to generate URL'}
+            </code>
+            <p className="text-xs text-[#A0A0AB] mt-2">Same URL for all streams. Paste into OBS &rarr; Settings &rarr; Stream &rarr; Server</p>
+          </div>
+
+          {/* Bearer Token */}
+          <div className="p-4 bg-[#1A1A24] rounded-lg">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-sm font-medium text-white">Bearer Token</p>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  const token = myStream?.whip_token || '';
+                  if (token) {
+                    navigator.clipboard.writeText(token);
+                    setWhipTokenCopied(true);
+                    toast.success('Bearer Token copied!');
+                    setTimeout(() => setWhipTokenCopied(false), 2000);
+                  }
+                }}
+                className="text-[#00E5FF] hover:text-[#00B3CC] hover:bg-white/10 gap-2"
+                data-testid="copy-whip-token-btn"
+              >
+                {whipTokenCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                {whipTokenCopied ? 'Copied!' : 'Copy'}
+              </Button>
+            </div>
+            <code className="text-sm text-[#00E5FF] bg-[#292938] px-4 py-3 rounded-lg block font-mono break-all max-h-20 overflow-hidden" data-testid="whip-token-display">
+              {myStream?.whip_token 
+                ? myStream.whip_token.substring(0, 60) + '...' 
+                : 'Start a stream to generate token'}
+            </code>
+            <p className="text-xs text-[#A0A0AB] mt-2">Unique per stream session. Paste into OBS &rarr; Bearer Token field</p>
+          </div>
+
+          {/* Legacy Stream Key */}
+          <details className="group">
+            <summary className="text-sm text-[#A0A0AB] cursor-pointer hover:text-white transition-colors">
+              Show legacy stream key (advanced)
+            </summary>
+            <div className="mt-3 p-4 bg-[#1A1A24] rounded-lg">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-sm text-[#A0A0AB]">Stream Key</p>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={copyStreamKey}
+                  className="text-[#00E5FF] hover:text-[#00B3CC] hover:bg-white/10 gap-2"
+                  data-testid="copy-stream-key-btn"
+                >
+                  {streamKeyCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                  {streamKeyCopied ? 'Copied!' : 'Copy'}
+                </Button>
+              </div>
+              <code className="text-sm text-[#00E5FF] bg-[#292938] px-4 py-3 rounded-lg block font-mono break-all" data-testid="stream-key-display">
+                {user?.stream_key || 'Loading...'}
+              </code>
+            </div>
+          </details>
         </div>
       </div>
 

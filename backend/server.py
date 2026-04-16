@@ -631,7 +631,7 @@ async def get_streams(category_id: Optional[str] = None, limit: int = 20, offset
     if category_id:
         query["category_id"] = category_id
     
-    streams = await db.streams.find(query, {"_id": 0}).sort("viewer_count", -1).skip(offset).limit(limit).to_list(limit)
+    streams = await db.streams.find(query, {"_id": 0, "whip_token": 0}).sort("viewer_count", -1).skip(offset).limit(limit).to_list(limit)
     
     for stream in streams:
         user = await db.users.find_one({"user_id": stream["user_id"]}, {"_id": 0, "username": 1, "display_name": 1, "avatar_url": 1})
@@ -687,6 +687,25 @@ async def create_stream(stream_data: StreamCreate, user: dict = Depends(get_curr
         raise HTTPException(status_code=400, detail="Invalid category")
     
     stream_id = f"stream_{uuid.uuid4().hex[:12]}"
+    room_name = f"stream_{stream_id}"
+    
+    # Generate WHIP Bearer token for OBS
+    whip_token = ""
+    if LIVEKIT_API_KEY and LIVEKIT_API_SECRET:
+        token = AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+        token = (
+            token.with_identity(user["user_id"])
+            .with_name(user.get("display_name") or user["username"])
+            .with_grants(VideoGrants(
+                room_join=True,
+                room=room_name,
+                can_publish=True,
+                can_subscribe=True,
+            ))
+        )
+        whip_token = token.to_jwt()
+    
+    whip_url = LIVEKIT_URL.replace("wss://", "https://") + "/rtc/whip" if LIVEKIT_URL else ""
     
     stream_doc = {
         "stream_id": stream_id,
@@ -697,6 +716,9 @@ async def create_stream(stream_data: StreamCreate, user: dict = Depends(get_curr
         "thumbnail_url": stream_data.thumbnail_url,
         "viewer_count": 0,
         "is_live": True,
+        "room_name": room_name,
+        "whip_token": whip_token,
+        "whip_url": whip_url,
         "started_at": datetime.now(timezone.utc),
         "created_at": datetime.now(timezone.utc)
     }
@@ -751,6 +773,34 @@ async def get_my_stream(user: dict = Depends(get_current_user)):
     stream = await db.streams.find_one({"user_id": user["user_id"], "is_live": True}, {"_id": 0})
     if not stream:
         return None
+    
+    # Ensure WHIP URL is always current
+    if LIVEKIT_URL:
+        stream["whip_url"] = LIVEKIT_URL.replace("wss://", "https://") + "/rtc/whip"
+    
+    # Generate WHIP token if missing (for streams created before this feature)
+    if not stream.get("whip_token") and LIVEKIT_API_KEY and LIVEKIT_API_SECRET:
+        room_name = stream.get("room_name") or f"stream_{stream['stream_id']}"
+        token = AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+        token = (
+            token.with_identity(user["user_id"])
+            .with_name(user.get("display_name") or user["username"])
+            .with_grants(VideoGrants(
+                room_join=True,
+                room=room_name,
+                can_publish=True,
+                can_subscribe=True,
+            ))
+        )
+        whip_token = token.to_jwt()
+        stream["whip_token"] = whip_token
+        stream["room_name"] = room_name
+        # Save for future requests
+        await db.streams.update_one(
+            {"stream_id": stream["stream_id"]},
+            {"$set": {"whip_token": whip_token, "room_name": room_name}}
+        )
+    
     return stream
 
 # ============= CHAT ROUTES =============
