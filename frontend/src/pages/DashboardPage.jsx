@@ -362,7 +362,7 @@ export default function DashboardPage() {
             <code className="text-sm text-[#00E5FF] bg-[#292938] px-4 py-3 rounded-lg block font-mono break-all" data-testid="whip-url-display">
               {myStream?.whip_url || 'Start a stream to generate URL'}
             </code>
-            <p className="text-xs text-[#A0A0AB] mt-2">Same URL for all streams. Paste into OBS &rarr; Settings &rarr; Stream &rarr; Server</p>
+            <p className="text-xs text-[#A0A0AB] mt-2">Unique per stream session. Paste into OBS &rarr; Settings &rarr; Stream &rarr; Server</p>
           </div>
 
           {/* Bearer Token */}
@@ -388,12 +388,10 @@ export default function DashboardPage() {
                 {whipTokenCopied ? 'Copied!' : 'Copy'}
               </Button>
             </div>
-            <code className="text-sm text-[#00E5FF] bg-[#292938] px-4 py-3 rounded-lg block font-mono break-all max-h-20 overflow-hidden" data-testid="whip-token-display">
-              {myStream?.whip_token 
-                ? myStream.whip_token.substring(0, 60) + '...' 
-                : 'Start a stream to generate token'}
+            <code className="text-sm text-[#00E5FF] bg-[#292938] px-4 py-3 rounded-lg block font-mono break-all max-h-24 overflow-y-auto" data-testid="whip-token-display">
+              {myStream?.whip_token || 'Start a stream to generate token'}
             </code>
-            <p className="text-xs text-[#A0A0AB] mt-2">Unique per stream session. Paste into OBS &rarr; Bearer Token field</p>
+            <p className="text-xs text-[#A0A0AB] mt-2">Unique per stream session. Paste into OBS &rarr; Bearer Token field. Use the Copy button above.</p>
           </div>
 
           {/* Legacy Stream Key */}

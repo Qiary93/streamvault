@@ -21,7 +21,8 @@ import json
 import httpx
 
 # LiveKit integration
-from livekit.api import AccessToken, VideoGrants
+from livekit.api import AccessToken, VideoGrants, LiveKitAPI
+from livekit.protocol.ingress import CreateIngressRequest, IngressInput
 
 # Stripe integration
 from emergentintegrations.payments.stripe.checkout import (
@@ -689,23 +690,47 @@ async def create_stream(stream_data: StreamCreate, user: dict = Depends(get_curr
     stream_id = f"stream_{uuid.uuid4().hex[:12]}"
     room_name = f"stream_{stream_id}"
     
-    # Generate WHIP Bearer token for OBS
+    # Create LiveKit WHIP Ingress for OBS streaming
+    whip_url = ""
     whip_token = ""
-    if LIVEKIT_API_KEY and LIVEKIT_API_SECRET:
-        token = AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-        token = (
-            token.with_identity(user["user_id"])
-            .with_name(user.get("display_name") or user["username"])
-            .with_grants(VideoGrants(
-                room_join=True,
-                room=room_name,
-                can_publish=True,
-                can_subscribe=True,
-            ))
-        )
-        whip_token = token.to_jwt()
+    ingress_id = ""
     
-    whip_url = LIVEKIT_URL.replace("wss://", "https://") + "/rtc/whip" if LIVEKIT_URL else ""
+    if LIVEKIT_API_KEY and LIVEKIT_API_SECRET and LIVEKIT_URL:
+        try:
+            async with LiveKitAPI(
+                url=LIVEKIT_URL,
+                api_key=LIVEKIT_API_KEY,
+                api_secret=LIVEKIT_API_SECRET
+            ) as lkapi:
+                ingress_req = CreateIngressRequest(
+                    input_type=IngressInput.WHIP_INPUT,
+                    name=f"stream_{stream_id}",
+                    room_name=room_name,
+                    participant_identity=user["user_id"],
+                    participant_name=user.get("display_name") or user["username"],
+                    enable_transcoding=False,
+                )
+                ingress_info = await lkapi.ingress.create_ingress(ingress_req)
+                whip_url = ingress_info.url
+                whip_token = ingress_info.stream_key
+                ingress_id = ingress_info.ingress_id
+                logger.info(f"Created WHIP ingress: {ingress_id} for stream {stream_id}")
+        except Exception as e:
+            logger.error(f"Failed to create WHIP ingress: {e}")
+            # Fallback: generate manual token
+            token = AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+            token = (
+                token.with_identity(user["user_id"])
+                .with_name(user.get("display_name") or user["username"])
+                .with_grants(VideoGrants(
+                    room_join=True,
+                    room=room_name,
+                    can_publish=True,
+                    can_subscribe=True,
+                ))
+            )
+            whip_token = token.to_jwt()
+            whip_url = LIVEKIT_URL.replace("wss://", "https://") + "/rtc/whip"
     
     stream_doc = {
         "stream_id": stream_id,
@@ -717,8 +742,9 @@ async def create_stream(stream_data: StreamCreate, user: dict = Depends(get_curr
         "viewer_count": 0,
         "is_live": True,
         "room_name": room_name,
-        "whip_token": whip_token,
         "whip_url": whip_url,
+        "whip_token": whip_token,
+        "ingress_id": ingress_id,
         "started_at": datetime.now(timezone.utc),
         "created_at": datetime.now(timezone.utc)
     }
@@ -763,6 +789,21 @@ async def end_stream(stream_id: str, user: dict = Depends(get_current_user)):
     if stream["user_id"] != user["user_id"]:
         raise HTTPException(status_code=403, detail="Not authorized")
     
+    # Delete LiveKit ingress if exists
+    ingress_id = stream.get("ingress_id")
+    if ingress_id and LIVEKIT_API_KEY and LIVEKIT_API_SECRET and LIVEKIT_URL:
+        try:
+            from livekit.protocol.ingress import DeleteIngressRequest
+            async with LiveKitAPI(
+                url=LIVEKIT_URL,
+                api_key=LIVEKIT_API_KEY,
+                api_secret=LIVEKIT_API_SECRET
+            ) as lkapi:
+                await lkapi.ingress.delete_ingress(DeleteIngressRequest(ingress_id=ingress_id))
+                logger.info(f"Deleted ingress {ingress_id}")
+        except Exception as e:
+            logger.error(f"Failed to delete ingress: {e}")
+    
     await db.streams.update_one({"stream_id": stream_id}, {"$set": {"is_live": False, "ended_at": datetime.now(timezone.utc)}})
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"is_streaming": False}})
     
@@ -774,32 +815,41 @@ async def get_my_stream(user: dict = Depends(get_current_user)):
     if not stream:
         return None
     
-    # Ensure WHIP URL is always current
-    if LIVEKIT_URL:
-        stream["whip_url"] = LIVEKIT_URL.replace("wss://", "https://") + "/rtc/whip"
-    
-    # Generate WHIP token if missing (for streams created before this feature)
-    if not stream.get("whip_token") and LIVEKIT_API_KEY and LIVEKIT_API_SECRET:
-        room_name = stream.get("room_name") or f"stream_{stream['stream_id']}"
-        token = AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-        token = (
-            token.with_identity(user["user_id"])
-            .with_name(user.get("display_name") or user["username"])
-            .with_grants(VideoGrants(
-                room_join=True,
-                room=room_name,
-                can_publish=True,
-                can_subscribe=True,
-            ))
-        )
-        whip_token = token.to_jwt()
-        stream["whip_token"] = whip_token
-        stream["room_name"] = room_name
-        # Save for future requests
-        await db.streams.update_one(
-            {"stream_id": stream["stream_id"]},
-            {"$set": {"whip_token": whip_token, "room_name": room_name}}
-        )
+    # If WHIP credentials are missing, create ingress on-the-fly
+    if (not stream.get("whip_url") or not stream.get("whip_token")) and LIVEKIT_API_KEY and LIVEKIT_API_SECRET and LIVEKIT_URL:
+        try:
+            room_name = stream.get("room_name") or f"stream_{stream['stream_id']}"
+            async with LiveKitAPI(
+                url=LIVEKIT_URL,
+                api_key=LIVEKIT_API_KEY,
+                api_secret=LIVEKIT_API_SECRET
+            ) as lkapi:
+                ingress_req = CreateIngressRequest(
+                    input_type=IngressInput.WHIP_INPUT,
+                    name=f"stream_{stream['stream_id']}",
+                    room_name=room_name,
+                    participant_identity=user["user_id"],
+                    participant_name=user.get("display_name") or user["username"],
+                    enable_transcoding=False,
+                )
+                ingress_info = await lkapi.ingress.create_ingress(ingress_req)
+                stream["whip_url"] = ingress_info.url
+                stream["whip_token"] = ingress_info.stream_key
+                stream["ingress_id"] = ingress_info.ingress_id
+                stream["room_name"] = room_name
+                # Save for future requests
+                await db.streams.update_one(
+                    {"stream_id": stream["stream_id"]},
+                    {"$set": {
+                        "whip_url": ingress_info.url,
+                        "whip_token": ingress_info.stream_key,
+                        "ingress_id": ingress_info.ingress_id,
+                        "room_name": room_name
+                    }}
+                )
+                logger.info(f"Created WHIP ingress on-the-fly for stream {stream['stream_id']}")
+        except Exception as e:
+            logger.error(f"Failed to create ingress on-the-fly: {e}")
     
     return stream
 
