@@ -11,13 +11,18 @@ const API = process.env.REACT_APP_BACKEND_URL;
 
 export default function HomePage() {
   const [featured, setFeatured] = useState({ top_streams: [], categories: [], recommended_streamers: [] });
+  const [allCategories, setAllCategories] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const fetchFeatured = async () => {
+    const fetchData = async () => {
       try {
-        const response = await axios.get(`${API}/api/featured`);
-        setFeatured(response.data);
+        const [featuredRes, categoriesRes] = await Promise.all([
+          axios.get(`${API}/api/featured`),
+          axios.get(`${API}/api/categories`)
+        ]);
+        setFeatured(featuredRes.data);
+        setAllCategories(categoriesRes.data);
       } catch (error) {
         console.error('Error fetching featured:', error);
       } finally {
@@ -25,7 +30,7 @@ export default function HomePage() {
       }
     };
 
-    fetchFeatured();
+    fetchData();
   }, []);
 
   if (loading) {
@@ -82,7 +87,7 @@ export default function HomePage() {
       )}
 
       {/* Categories */}
-      {featured.categories.length > 0 && (
+      {(allCategories.length > 0 || featured.categories.length > 0) && (
         <section data-testid="categories-section">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl lg:text-2xl font-bold text-white font-['Outfit']">Browse Categories</h2>
@@ -91,7 +96,7 @@ export default function HomePage() {
             </Link>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
-            {featured.categories.map((category) => (
+            {(allCategories.length > 0 ? allCategories : featured.categories).map((category) => (
               <CategoryCard key={category.category_id} category={category} />
             ))}
           </div>

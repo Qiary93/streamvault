@@ -122,9 +122,9 @@ export default function StreamPage() {
   }
 
   return (
-    <div className="h-[calc(100vh-64px)] grid grid-cols-1 lg:grid-cols-12" data-testid="stream-page">
+    <div className="min-h-[calc(100vh-64px)] grid grid-cols-1 lg:grid-cols-12" data-testid="stream-page">
       {/* Main Content */}
-      <div className="lg:col-span-9 flex flex-col">
+      <div className="lg:col-span-9 flex flex-col overflow-y-auto">
         {/* Video Player */}
         <div className="relative aspect-video bg-black" data-testid="video-player">
           {stream.thumbnail_url ? (
@@ -284,7 +284,7 @@ export default function StreamPage() {
       </div>
 
       {/* Chat */}
-      <div className="lg:col-span-3 h-[400px] lg:h-auto">
+      <div className="lg:col-span-3 h-[500px] lg:h-[calc(100vh-64px)] lg:sticky lg:top-16">
         <ChatBox streamId={streamId} />
       </div>
     </div>

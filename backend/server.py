@@ -867,13 +867,31 @@ async def search(q: str, type: str = "all", limit: int = 20):
     results = {"streams": [], "users": [], "categories": []}
     
     if type in ["all", "streams"]:
-        streams = await db.streams.find(
-            {"title": {"$regex": q, "$options": "i"}, "is_live": True}, {"_id": 0}
-        ).limit(limit).to_list(limit)
+        # Find matching category IDs
+        matching_cats = await db.categories.find(
+            {"name": {"$regex": q, "$options": "i"}}, {"_id": 0, "category_id": 1}
+        ).to_list(100)
+        matching_cat_ids = [c["category_id"] for c in matching_cats]
+        
+        stream_query = {"is_live": True, "$or": [
+            {"title": {"$regex": q, "$options": "i"}},
+            {"description": {"$regex": q, "$options": "i"}},
+            {"category_id": {"$in": matching_cat_ids}} if matching_cat_ids else {"_never": True}
+        ]}
+        # Clean up impossible conditions
+        stream_query["$or"] = [c for c in stream_query["$or"] if "_never" not in c]
+        if not stream_query["$or"]:
+            stream_query.pop("$or")
+            stream_query["title"] = {"$regex": q, "$options": "i"}
+        
+        streams = await db.streams.find(stream_query, {"_id": 0}).limit(limit).to_list(limit)
         for stream in streams:
             user = await db.users.find_one({"user_id": stream["user_id"]}, {"_id": 0, "username": 1, "display_name": 1, "avatar_url": 1})
             if user:
                 stream.update(user)
+            category = await db.categories.find_one({"category_id": stream.get("category_id")}, {"_id": 0, "name": 1})
+            if category:
+                stream["category_name"] = category["name"]
         results["streams"] = streams
     
     if type in ["all", "users"]:
