@@ -54,6 +54,8 @@ jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 librt==0.8.1
 litellm==1.80.0
+livekit-api==1.1.0
+livekit-protocol==1.1.5
 markdown-it-py==4.0.0
 MarkupSafe==3.0.3
 mccabe==0.7.0
@@ -115,6 +117,7 @@ tiktoken==0.12.0
 tokenizers==0.22.2
 tqdm==4.67.3
 typer==0.24.1
+types-protobuf==7.34.1.20260408
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzdata==2026.1

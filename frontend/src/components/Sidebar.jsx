@@ -15,12 +15,14 @@ import {
   Barbell,
   Code,
   CaretLeft,
-  CaretRight
+  CaretRight,
+  Play
 } from '@phosphor-icons/react';
 
 const navItems = [
   { icon: House, label: 'Home', path: '/' },
   { icon: Compass, label: 'Browse', path: '/browse' },
+  { icon: Play, label: 'VODs', path: '/vods' },
 ];
 
 const categories = [

@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
@@ -18,6 +19,9 @@ import asyncio
 from bson import ObjectId
 import json
 import httpx
+
+# LiveKit integration
+from livekit.api import AccessToken, VideoGrants
 
 # Stripe integration
 from emergentintegrations.payments.stripe.checkout import (
@@ -37,6 +41,11 @@ JWT_ALGORITHM = "HS256"
 def get_jwt_secret() -> str:
     return os.environ["JWT_SECRET"]
 
+# LiveKit Configuration
+LIVEKIT_API_KEY = os.environ.get("LIVEKIT_API_KEY", "")
+LIVEKIT_API_SECRET = os.environ.get("LIVEKIT_API_SECRET", "")
+LIVEKIT_URL = os.environ.get("LIVEKIT_URL", "")
+
 # Create the main app
 app = FastAPI(title="StreamVault API")
 
@@ -46,6 +55,52 @@ api_router = APIRouter(prefix="/api")
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# ============= WEBSOCKET CHAT MANAGER =============
+
+class ChatConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, List[WebSocket]] = {}
+    
+    async def connect(self, websocket: WebSocket, stream_id: str):
+        await websocket.accept()
+        if stream_id not in self.active_connections:
+            self.active_connections[stream_id] = []
+        self.active_connections[stream_id].append(websocket)
+        # Update viewer count
+        await db.streams.update_one(
+            {"stream_id": stream_id},
+            {"$inc": {"viewer_count": 1}}
+        )
+    
+    def disconnect(self, websocket: WebSocket, stream_id: str):
+        if stream_id in self.active_connections:
+            if websocket in self.active_connections[stream_id]:
+                self.active_connections[stream_id].remove(websocket)
+            if not self.active_connections[stream_id]:
+                del self.active_connections[stream_id]
+        asyncio.create_task(
+            db.streams.update_one(
+                {"stream_id": stream_id, "viewer_count": {"$gt": 0}},
+                {"$inc": {"viewer_count": -1}}
+            )
+        )
+    
+    async def broadcast(self, stream_id: str, message: dict):
+        if stream_id in self.active_connections:
+            dead = []
+            for conn in self.active_connections[stream_id]:
+                try:
+                    await conn.send_json(message)
+                except Exception:
+                    dead.append(conn)
+            for d in dead:
+                self.disconnect(d, stream_id)
+    
+    def get_viewer_count(self, stream_id: str) -> int:
+        return len(self.active_connections.get(stream_id, []))
+
+chat_manager = ChatConnectionManager()
 
 # ============= MODELS =============
 
@@ -261,13 +316,13 @@ async def register(user_data: UserCreate, request: Request):
     access_token = create_access_token(user_id, email)
     refresh_token = create_refresh_token(user_id)
     
-    from fastapi.responses import JSONResponse
     response = JSONResponse(content={
         "user_id": user_id,
         "email": email,
         "username": username,
         "display_name": user_doc["display_name"],
-        "role": "user"
+        "role": "user",
+        "stream_key": stream_key
     })
     response.set_cookie(key="access_token", value=access_token, httponly=True, secure=False, samesite="lax", max_age=900, path="/")
     response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=False, samesite="lax", max_age=604800, path="/")
@@ -287,14 +342,14 @@ async def login(credentials: UserLogin, request: Request):
     access_token = create_access_token(user["user_id"], email)
     refresh_token = create_refresh_token(user["user_id"])
     
-    from fastapi.responses import JSONResponse
     response = JSONResponse(content={
         "user_id": user["user_id"],
         "email": user["email"],
         "username": user["username"],
         "display_name": user.get("display_name"),
         "avatar_url": user.get("avatar_url"),
-        "role": user.get("role", "user")
+        "role": user.get("role", "user"),
+        "stream_key": user.get("stream_key")
     })
     response.set_cookie(key="access_token", value=access_token, httponly=True, secure=False, samesite="lax", max_age=900, path="/")
     response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=False, samesite="lax", max_age=604800, path="/")
@@ -302,7 +357,6 @@ async def login(credentials: UserLogin, request: Request):
 
 @api_router.post("/auth/logout")
 async def logout():
-    from fastapi.responses import JSONResponse
     response = JSONResponse(content={"message": "Logged out successfully"})
     response.delete_cookie(key="access_token", path="/")
     response.delete_cookie(key="refresh_token", path="/")
@@ -407,7 +461,6 @@ async def google_session(request: Request):
     access_token = create_access_token(user_id, email)
     refresh_token = create_refresh_token(user_id)
     
-    from fastapi.responses import JSONResponse
     response = JSONResponse(content=user)
     response.set_cookie(key="access_token", value=access_token, httponly=True, secure=False, samesite="lax", max_age=900, path="/")
     response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=False, samesite="lax", max_age=604800, path="/")
@@ -481,6 +534,17 @@ async def follow_user(user_id: str, user: dict = Depends(get_current_user)):
     await db.follows.insert_one(follow_doc)
     await db.users.update_one({"user_id": user["user_id"]}, {"$inc": {"following_count": 1}})
     await db.users.update_one({"user_id": user_id}, {"$inc": {"follower_count": 1}})
+    
+    # Send notification
+    await db.notifications.insert_one({
+        "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+        "user_id": user_id,
+        "type": "follow",
+        "message": f"{user.get('display_name') or user['username']} started following you!",
+        "data": {"follower_id": user["user_id"], "follower_username": user["username"]},
+        "read": False,
+        "created_at": datetime.now(timezone.utc)
+    })
     
     return {"message": "Followed successfully"}
 
@@ -677,7 +741,7 @@ async def end_stream(stream_id: str, user: dict = Depends(get_current_user)):
     if stream["user_id"] != user["user_id"]:
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    await db.streams.update_one({"stream_id": stream_id}, {"$set": {"is_live": False}})
+    await db.streams.update_one({"stream_id": stream_id}, {"$set": {"is_live": False, "ended_at": datetime.now(timezone.utc)}})
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"is_streaming": False}})
     
     return {"message": "Stream ended"}
@@ -815,6 +879,17 @@ async def get_donation_status(session_id: str, user: dict = Depends(get_current_
                 "streamer_username": txn["streamer_username"],
                 "amount": txn["amount"],
                 "message": txn.get("message"),
+                "created_at": datetime.now(timezone.utc)
+            })
+            
+            # Notify streamer of donation
+            await db.notifications.insert_one({
+                "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+                "user_id": txn["streamer_id"],
+                "type": "donation",
+                "message": f"{txn['donor_username']} donated ${txn['amount']:.2f}!",
+                "data": {"donor_id": txn["donor_id"], "amount": txn["amount"], "message": txn.get("message")},
+                "read": False,
                 "created_at": datetime.now(timezone.utc)
             })
     
@@ -1062,8 +1137,352 @@ async def seed_data():
     await db.follows.create_index([("follower_id", 1), ("following_id", 1)], unique=True)
     await db.chat_messages.create_index([("stream_id", 1), ("created_at", -1)])
     await db.categories.create_index("category_id", unique=True)
+    await db.notifications.create_index([("user_id", 1), ("created_at", -1)])
+    await db.subscriptions.create_index([("subscriber_id", 1), ("streamer_id", 1)])
+    await db.subscriptions.create_index("expires_at")
     
     logger.info("Indexes created")
+
+# ============= LIVEKIT TOKEN ENDPOINTS =============
+
+@api_router.post("/livekit/token/streamer")
+async def get_streamer_livekit_token(request: Request, user: dict = Depends(get_current_user)):
+    body = await request.json()
+    room_name = body.get("room_name")
+    
+    if not room_name:
+        raise HTTPException(status_code=400, detail="room_name required")
+    
+    if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
+        raise HTTPException(status_code=500, detail="LiveKit not configured")
+    
+    token = AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+    token = (
+        token.with_identity(user["user_id"])
+        .with_name(user.get("display_name") or user["username"])
+        .with_grants(VideoGrants(
+            room_join=True,
+            room=room_name,
+            can_publish=True,
+            can_subscribe=True,
+        ))
+    )
+    
+    return {
+        "token": token.to_jwt(),
+        "server_url": LIVEKIT_URL
+    }
+
+@api_router.post("/livekit/token/viewer")
+async def get_viewer_livekit_token(request: Request):
+    body = await request.json()
+    room_name = body.get("room_name")
+    viewer_id = body.get("viewer_id", f"viewer_{uuid.uuid4().hex[:8]}")
+    viewer_name = body.get("viewer_name", "Viewer")
+    
+    if not room_name:
+        raise HTTPException(status_code=400, detail="room_name required")
+    
+    if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
+        raise HTTPException(status_code=500, detail="LiveKit not configured")
+    
+    token = AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+    token = (
+        token.with_identity(viewer_id)
+        .with_name(viewer_name)
+        .with_grants(VideoGrants(
+            room_join=True,
+            room=room_name,
+            can_publish=False,
+            can_subscribe=True,
+        ))
+    )
+    
+    return {
+        "token": token.to_jwt(),
+        "server_url": LIVEKIT_URL
+    }
+
+# ============= WEBSOCKET CHAT ENDPOINT =============
+
+@app.websocket("/api/ws/chat/{stream_id}")
+async def websocket_chat(websocket: WebSocket, stream_id: str):
+    await chat_manager.connect(websocket, stream_id)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            
+            message_doc = {
+                "message_id": f"msg_{uuid.uuid4().hex[:12]}",
+                "stream_id": stream_id,
+                "user_id": data.get("user_id", "anonymous"),
+                "username": data.get("username", "Anonymous"),
+                "display_name": data.get("display_name"),
+                "avatar_url": data.get("avatar_url"),
+                "content": str(data.get("content", ""))[:500],
+                "type": data.get("type", "message"),
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            
+            await db.chat_messages.insert_one({**message_doc})
+            message_doc.pop("_id", None)
+            
+            await chat_manager.broadcast(stream_id, message_doc)
+    except WebSocketDisconnect:
+        chat_manager.disconnect(websocket, stream_id)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        chat_manager.disconnect(websocket, stream_id)
+
+# ============= SUBSCRIPTION TIERS =============
+
+SUBSCRIPTION_TIERS = {
+    "tier1": {"name": "Tier 1", "amount": 4.99, "perks": "Ad-free viewing, custom badge"},
+    "tier2": {"name": "Tier 2", "amount": 9.99, "perks": "Tier 1 + Custom emotes, priority chat"},
+    "tier3": {"name": "Tier 3", "amount": 24.99, "perks": "Tier 2 + VIP access, exclusive streams"},
+    "tier4": {"name": "Tier 4", "amount": 49.99, "perks": "Tier 3 + Personal shoutout, mod access"},
+    "tier5": {"name": "Tier 5", "amount": 100.00, "perks": "All perks + Direct streamer contact"},
+}
+
+@api_router.get("/subscriptions/tiers")
+async def get_subscription_tiers():
+    return [{"tier_id": k, **v} for k, v in SUBSCRIPTION_TIERS.items()]
+
+@api_router.post("/subscriptions/checkout")
+async def create_subscription_checkout(request: Request, user: dict = Depends(get_current_user)):
+    body = await request.json()
+    streamer_id = body.get("streamer_id")
+    tier_id = body.get("tier_id")
+    origin_url = body.get("origin_url")
+    
+    if tier_id not in SUBSCRIPTION_TIERS:
+        raise HTTPException(status_code=400, detail="Invalid subscription tier")
+    
+    tier = SUBSCRIPTION_TIERS[tier_id]
+    amount = tier["amount"]
+    
+    streamer = await db.users.find_one({"user_id": streamer_id})
+    if not streamer:
+        raise HTTPException(status_code=404, detail="Streamer not found")
+    
+    # Check if already subscribed
+    existing_sub = await db.subscriptions.find_one({
+        "subscriber_id": user["user_id"],
+        "streamer_id": streamer_id,
+        "status": "active",
+        "expires_at": {"$gt": datetime.now(timezone.utc)}
+    })
+    if existing_sub:
+        raise HTTPException(status_code=400, detail="Already subscribed to this streamer")
+    
+    api_key = os.environ.get("STRIPE_API_KEY")
+    host_url = str(request.base_url).rstrip("/")
+    webhook_url = f"{host_url}/api/webhook/stripe"
+    
+    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=webhook_url)
+    
+    sub_id = f"sub_{uuid.uuid4().hex[:12]}"
+    success_url = f"{origin_url}/subscription/success?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin_url}/subscription/cancel"
+    
+    checkout_request = CheckoutSessionRequest(
+        amount=amount,
+        currency="usd",
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata={
+            "subscription_id": sub_id,
+            "subscriber_id": user["user_id"],
+            "streamer_id": streamer_id,
+            "tier_id": tier_id
+        }
+    )
+    
+    session = await stripe_checkout.create_checkout_session(checkout_request)
+    
+    await db.payment_transactions.insert_one({
+        "transaction_id": f"txn_{uuid.uuid4().hex[:12]}",
+        "subscription_id": sub_id,
+        "session_id": session.session_id,
+        "subscriber_id": user["user_id"],
+        "streamer_id": streamer_id,
+        "tier_id": tier_id,
+        "amount": amount,
+        "currency": "usd",
+        "payment_status": "pending",
+        "type": "subscription",
+        "created_at": datetime.now(timezone.utc)
+    })
+    
+    return {"url": session.url, "session_id": session.session_id}
+
+@api_router.get("/subscriptions/status/{session_id}")
+async def get_subscription_status(session_id: str, user: dict = Depends(get_current_user)):
+    api_key = os.environ.get("STRIPE_API_KEY")
+    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url="")
+    
+    status = await stripe_checkout.get_checkout_status(session_id)
+    
+    if status.payment_status == "paid":
+        txn = await db.payment_transactions.find_one({"session_id": session_id, "type": "subscription"})
+        if txn and txn.get("payment_status") != "completed":
+            await db.payment_transactions.update_one(
+                {"session_id": session_id},
+                {"$set": {"payment_status": "completed"}}
+            )
+            
+            # Create active subscription (30 days)
+            await db.subscriptions.insert_one({
+                "subscription_id": txn["subscription_id"],
+                "subscriber_id": txn["subscriber_id"],
+                "streamer_id": txn["streamer_id"],
+                "tier_id": txn["tier_id"],
+                "amount": txn["amount"],
+                "status": "active",
+                "starts_at": datetime.now(timezone.utc),
+                "expires_at": datetime.now(timezone.utc) + timedelta(days=30),
+                "created_at": datetime.now(timezone.utc)
+            })
+            
+            # Notify streamer
+            await db.notifications.insert_one({
+                "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+                "user_id": txn["streamer_id"],
+                "type": "subscription",
+                "message": f"New {SUBSCRIPTION_TIERS[txn['tier_id']]['name']} subscriber!",
+                "data": {"subscriber_id": txn["subscriber_id"], "tier_id": txn["tier_id"]},
+                "read": False,
+                "created_at": datetime.now(timezone.utc)
+            })
+    
+    return {
+        "status": status.status,
+        "payment_status": status.payment_status,
+        "amount": status.amount_total / 100
+    }
+
+@api_router.get("/subscriptions/my")
+async def get_my_subscriptions(user: dict = Depends(get_current_user)):
+    subs = await db.subscriptions.find(
+        {"subscriber_id": user["user_id"], "status": "active", "expires_at": {"$gt": datetime.now(timezone.utc)}},
+        {"_id": 0}
+    ).to_list(100)
+    return subs
+
+@api_router.get("/subscriptions/check/{streamer_id}")
+async def check_subscription(streamer_id: str, user: dict = Depends(get_current_user)):
+    sub = await db.subscriptions.find_one({
+        "subscriber_id": user["user_id"],
+        "streamer_id": streamer_id,
+        "status": "active",
+        "expires_at": {"$gt": datetime.now(timezone.utc)}
+    }, {"_id": 0})
+    return {"subscribed": sub is not None, "subscription": sub}
+
+@api_router.get("/subscriptions/subscribers")
+async def get_my_subscribers(user: dict = Depends(get_current_user)):
+    subs = await db.subscriptions.find(
+        {"streamer_id": user["user_id"], "status": "active", "expires_at": {"$gt": datetime.now(timezone.utc)}},
+        {"_id": 0}
+    ).to_list(100)
+    return subs
+
+# ============= NOTIFICATION ENDPOINTS =============
+
+@api_router.get("/notifications")
+async def get_notifications(user: dict = Depends(get_current_user), limit: int = 20):
+    notifs = await db.notifications.find(
+        {"user_id": user["user_id"]}, {"_id": 0}
+    ).sort("created_at", -1).limit(limit).to_list(limit)
+    return notifs
+
+@api_router.get("/notifications/unread-count")
+async def get_unread_count(user: dict = Depends(get_current_user)):
+    count = await db.notifications.count_documents({
+        "user_id": user["user_id"],
+        "read": False
+    })
+    return {"count": count}
+
+@api_router.put("/notifications/read-all")
+async def mark_all_read(user: dict = Depends(get_current_user)):
+    await db.notifications.update_many(
+        {"user_id": user["user_id"], "read": False},
+        {"$set": {"read": True}}
+    )
+    return {"message": "All notifications marked as read"}
+
+@api_router.put("/notifications/{notification_id}/read")
+async def mark_read(notification_id: str, user: dict = Depends(get_current_user)):
+    await db.notifications.update_one(
+        {"notification_id": notification_id, "user_id": user["user_id"]},
+        {"$set": {"read": True}}
+    )
+    return {"message": "Notification marked as read"}
+
+# ============= VOD (PAST STREAMS) =============
+
+@api_router.get("/vods")
+async def get_vods(limit: int = 20, offset: int = 0):
+    vods = await db.streams.find(
+        {"is_live": False, "started_at": {"$exists": True}}, {"_id": 0}
+    ).sort("started_at", -1).skip(offset).limit(limit).to_list(limit)
+    
+    for vod in vods:
+        user = await db.users.find_one({"user_id": vod["user_id"]}, {"_id": 0, "username": 1, "display_name": 1, "avatar_url": 1})
+        if user:
+            vod.update(user)
+        category = await db.categories.find_one({"category_id": vod.get("category_id")}, {"_id": 0, "name": 1})
+        if category:
+            vod["category_name"] = category["name"]
+        # Calculate duration
+        if vod.get("started_at") and vod.get("ended_at"):
+            if isinstance(vod["started_at"], str):
+                vod["started_at"] = datetime.fromisoformat(vod["started_at"])
+            if isinstance(vod["ended_at"], str):
+                vod["ended_at"] = datetime.fromisoformat(vod["ended_at"])
+            duration = (vod["ended_at"] - vod["started_at"]).total_seconds()
+            vod["duration_seconds"] = int(duration)
+    
+    return vods
+
+@api_router.get("/vods/{stream_id}")
+async def get_vod(stream_id: str):
+    vod = await db.streams.find_one({"stream_id": stream_id}, {"_id": 0})
+    if not vod:
+        raise HTTPException(status_code=404, detail="VOD not found")
+    
+    user = await db.users.find_one({"user_id": vod["user_id"]}, {"_id": 0, "username": 1, "display_name": 1, "avatar_url": 1, "bio": 1, "follower_count": 1})
+    if user:
+        vod.update(user)
+    category = await db.categories.find_one({"category_id": vod.get("category_id")}, {"_id": 0, "name": 1})
+    if category:
+        vod["category_name"] = category["name"]
+    
+    # Get chat replay
+    chat = await db.chat_messages.find(
+        {"stream_id": stream_id}, {"_id": 0}
+    ).sort("created_at", 1).to_list(500)
+    vod["chat_replay"] = chat
+    
+    return vod
+
+@api_router.get("/users/{username}/vods")
+async def get_user_vods(username: str, limit: int = 20):
+    user = await db.users.find_one({"username": username.lower()}, {"_id": 0, "user_id": 1})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    vods = await db.streams.find(
+        {"user_id": user["user_id"], "is_live": False, "started_at": {"$exists": True}}, {"_id": 0}
+    ).sort("started_at", -1).limit(limit).to_list(limit)
+    
+    for vod in vods:
+        category = await db.categories.find_one({"category_id": vod.get("category_id")}, {"_id": 0, "name": 1})
+        if category:
+            vod["category_name"] = category["name"]
+    
+    return vods
 
 # Include the router
 app.include_router(api_router)

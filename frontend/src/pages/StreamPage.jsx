@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Eye, Users, Heart, HeartBreak, CurrencyDollar, Share } from '@phosphor-icons/react';
+import { Eye, Users, Heart, HeartBreak, CurrencyDollar, Share, Star } from '@phosphor-icons/react';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Button } from '../components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import ChatBox from '../components/ChatBox';
+import { LiveKitViewer } from '../components/LiveKitPlayer';
 import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'sonner';
 import axios from 'axios';
@@ -19,6 +20,14 @@ const donationPackages = [
   { id: 'mega', amount: 100, label: '$100' },
 ];
 
+const subscriptionTiers = [
+  { id: 'tier1', amount: 4.99, name: 'Tier 1', perks: 'Ad-free viewing, custom badge' },
+  { id: 'tier2', amount: 9.99, name: 'Tier 2', perks: 'Tier 1 + Custom emotes, priority chat' },
+  { id: 'tier3', amount: 24.99, name: 'Tier 3', perks: 'Tier 2 + VIP access, exclusive streams' },
+  { id: 'tier4', amount: 49.99, name: 'Tier 4', perks: 'Tier 3 + Personal shoutout, mod access' },
+  { id: 'tier5', amount: 100.00, name: 'Tier 5', perks: 'All perks + Direct streamer contact' },
+];
+
 export default function StreamPage() {
   const { streamId } = useParams();
   const { user } = useAuth();
@@ -26,8 +35,11 @@ export default function StreamPage() {
   const [loading, setLoading] = useState(true);
   const [following, setFollowing] = useState(false);
   const [donationOpen, setDonationOpen] = useState(false);
+  const [subscribeOpen, setSubscribeOpen] = useState(false);
   const [selectedPackage, setSelectedPackage] = useState(null);
+  const [selectedTier, setSelectedTier] = useState(null);
   const [donationMessage, setDonationMessage] = useState('');
+  const [isSubscribed, setIsSubscribed] = useState(false);
 
   useEffect(() => {
     const fetchStream = async () => {
@@ -37,6 +49,18 @@ export default function StreamPage() {
         });
         setStream(response.data);
         setFollowing(response.data.is_following);
+        
+        // Check subscription status
+        if (response.data.user_id) {
+          try {
+            const subRes = await axios.get(`${API}/api/subscriptions/check/${response.data.user_id}`, {
+              withCredentials: true
+            });
+            setIsSubscribed(subRes.data.subscribed);
+          } catch (e) {
+            // Not logged in or error
+          }
+        }
       } catch (error) {
         console.error('Error fetching stream:', error);
         toast.error('Stream not found');
@@ -104,6 +128,27 @@ export default function StreamPage() {
     toast.success('Link copied to clipboard!');
   };
 
+  const handleSubscribe = async () => {
+    if (!user) {
+      toast.error('Please log in to subscribe');
+      return;
+    }
+    if (!selectedTier) {
+      toast.error('Please select a tier');
+      return;
+    }
+    try {
+      const response = await axios.post(`${API}/api/subscriptions/checkout`, {
+        streamer_id: stream.user_id,
+        tier_id: selectedTier,
+        origin_url: window.location.origin
+      }, { withCredentials: true });
+      window.location.href = response.data.url;
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to process subscription');
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[50vh]">
@@ -125,9 +170,14 @@ export default function StreamPage() {
     <div className="min-h-[calc(100vh-64px)] grid grid-cols-1 lg:grid-cols-12" data-testid="stream-page">
       {/* Main Content */}
       <div className="lg:col-span-9 flex flex-col overflow-y-auto">
-        {/* Video Player */}
+        {/* Video Player - LiveKit */}
         <div className="relative aspect-video bg-black" data-testid="video-player">
-          {stream.thumbnail_url ? (
+          {stream.is_live ? (
+            <LiveKitViewer 
+              roomName={`stream_${stream.stream_id}`} 
+              streamThumbnail={stream.thumbnail_url} 
+            />
+          ) : stream.thumbnail_url ? (
             <img 
               src={stream.thumbnail_url} 
               alt={stream.title}
@@ -271,6 +321,53 @@ export default function StreamPage() {
               >
                 <Share className="w-5 h-5" />
               </Button>
+
+              {/* Subscribe Dialog */}
+              <Dialog open={subscribeOpen} onOpenChange={setSubscribeOpen}>
+                <DialogTrigger asChild>
+                  <Button 
+                    className={isSubscribed 
+                      ? "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 hover:bg-yellow-500/30" 
+                      : "bg-[#292938] text-white hover:bg-[#3D3D52]"}
+                    data-testid="subscribe-btn"
+                  >
+                    <Star weight={isSubscribed ? "fill" : "regular"} className="w-4 h-4 mr-2" />
+                    {isSubscribed ? 'Subscribed' : 'Subscribe'}
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="bg-[#0F0F16] border-white/10 max-w-md">
+                  <DialogHeader>
+                    <DialogTitle className="text-white">Subscribe to {stream.display_name || stream.username}</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-3 pt-4">
+                    {subscriptionTiers.map((tier) => (
+                      <button
+                        key={tier.id}
+                        onClick={() => setSelectedTier(tier.id)}
+                        className={`w-full p-4 rounded-lg border text-left transition-colors
+                          ${selectedTier === tier.id 
+                            ? 'border-[#00E5FF] bg-[#00E5FF]/10' 
+                            : 'border-white/10 hover:border-white/30'}`}
+                        data-testid={`sub-${tier.id}`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="font-bold text-white">{tier.name}</span>
+                          <span className="text-[#00E5FF] font-bold">${tier.amount}/mo</span>
+                        </div>
+                        <p className="text-xs text-[#A0A0AB]">{tier.perks}</p>
+                      </button>
+                    ))}
+                    <Button 
+                      onClick={handleSubscribe}
+                      disabled={!selectedTier}
+                      className="w-full bg-[#00E5FF] text-black font-bold hover:bg-[#00B3CC] disabled:opacity-50"
+                      data-testid="subscribe-submit-btn"
+                    >
+                      Subscribe {selectedTier && `- $${subscriptionTiers.find(t => t.id === selectedTier)?.amount}/mo`}
+                    </Button>
+                  </div>
+                </DialogContent>
+              </Dialog>
             </div>
           </div>
 

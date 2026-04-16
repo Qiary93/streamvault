@@ -14,6 +14,9 @@ import AuthCallback from './pages/AuthCallback';
 import DashboardPage from './pages/DashboardPage';
 import DonationSuccess from './pages/DonationSuccess';
 import SearchPage from './pages/SearchPage';
+import VODPage from './pages/VODPage';
+import VODDetailPage from './pages/VODDetailPage';
+import SubscriptionSuccess from './pages/SubscriptionSuccess';
 
 // Layout
 import Layout from './components/Layout';
@@ -59,8 +62,12 @@ function AppRouter() {
         <Route path="/stream/:streamId" element={<StreamPage />} />
         <Route path="/user/:username" element={<ProfilePage />} />
         <Route path="/search" element={<SearchPage />} />
+        <Route path="/vods" element={<VODPage />} />
+        <Route path="/vod/:streamId" element={<VODDetailPage />} />
         <Route path="/donation/success" element={<DonationSuccess />} />
         <Route path="/donation/cancel" element={<DonationSuccess />} />
+        <Route path="/subscription/success" element={<SubscriptionSuccess />} />
+        <Route path="/subscription/cancel" element={<SubscriptionSuccess />} />
         
         <Route path="/dashboard" element={
           <ProtectedRoute>

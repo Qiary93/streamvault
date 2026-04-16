@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { Broadcast, Eye, CurrencyDollar, Users, Plus, X } from '@phosphor-icons/react';
+import { Broadcast, Eye, CurrencyDollar, Users, Plus, X, Star, Copy, Check } from '@phosphor-icons/react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { LiveKitStreamer } from '../components/LiveKitPlayer';
 import { toast } from 'sonner';
 import axios from 'axios';
 
@@ -15,8 +16,10 @@ export default function DashboardPage() {
   const [myStream, setMyStream] = useState(null);
   const [categories, setCategories] = useState([]);
   const [donations, setDonations] = useState([]);
+  const [subscribers, setSubscribers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
+  const [streamKeyCopied, setStreamKeyCopied] = useState(false);
   const [streamForm, setStreamForm] = useState({
     title: '',
     description: '',
@@ -29,19 +32,30 @@ export default function DashboardPage() {
 
   const fetchData = async () => {
     try {
-      const [streamRes, categoriesRes, donationsRes] = await Promise.all([
+      const [streamRes, categoriesRes, donationsRes, subsRes] = await Promise.all([
         axios.get(`${API}/api/my/stream`, { withCredentials: true }).catch(() => ({ data: null })),
         axios.get(`${API}/api/categories`),
-        axios.get(`${API}/api/donations/received`, { withCredentials: true }).catch(() => ({ data: [] }))
+        axios.get(`${API}/api/donations/received`, { withCredentials: true }).catch(() => ({ data: [] })),
+        axios.get(`${API}/api/subscriptions/subscribers`, { withCredentials: true }).catch(() => ({ data: [] }))
       ]);
       
       setMyStream(streamRes.data);
       setCategories(categoriesRes.data);
       setDonations(donationsRes.data);
+      setSubscribers(subsRes.data);
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const copyStreamKey = () => {
+    if (user?.stream_key) {
+      navigator.clipboard.writeText(user.stream_key);
+      setStreamKeyCopied(true);
+      toast.success('Stream key copied!');
+      setTimeout(() => setStreamKeyCopied(false), 2000);
     }
   };
 
@@ -121,6 +135,18 @@ export default function DashboardPage() {
 
         <div className="bg-[#0F0F16] border border-white/5 rounded-xl p-4">
           <div className="flex items-center gap-3">
+            <div className="p-2 bg-yellow-500/10 rounded-lg">
+              <Star className="w-5 h-5 text-yellow-400" />
+            </div>
+            <div>
+              <p className="text-sm text-[#A0A0AB]">Subscribers</p>
+              <p className="text-xl font-bold text-white">{subscribers.length}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-[#0F0F16] border border-white/5 rounded-xl p-4">
+          <div className="flex items-center gap-3">
             <div className="p-2 bg-red-500/10 rounded-lg">
               <Eye className="w-5 h-5 text-red-400" />
             </div>
@@ -152,6 +178,11 @@ export default function DashboardPage() {
         
         {myStream ? (
           <div className="space-y-4">
+            {/* LiveKit Streamer Preview */}
+            <div className="aspect-video rounded-lg overflow-hidden bg-black">
+              <LiveKitStreamer roomName={`stream_${myStream.stream_id}`} />
+            </div>
+
             <div className="flex items-center justify-between p-4 bg-[#1A1A24] rounded-lg">
               <div>
                 <div className="flex items-center gap-2 mb-1">
@@ -169,16 +200,6 @@ export default function DashboardPage() {
               >
                 <X className="w-4 h-4 mr-2" /> End Stream
               </Button>
-            </div>
-
-            <div className="p-4 bg-[#1A1A24] rounded-lg">
-              <p className="text-sm text-[#A0A0AB] mb-2">Stream Key</p>
-              <code className="text-sm text-[#00E5FF] bg-[#292938] px-3 py-2 rounded block">
-                {user?.stream_key || 'Loading...'}
-              </code>
-              <p className="text-xs text-[#A0A0AB] mt-2">
-                Use this key in your streaming software (OBS, Streamlabs, etc.)
-              </p>
             </div>
           </div>
         ) : (
@@ -249,6 +270,32 @@ export default function DashboardPage() {
             </DialogContent>
           </Dialog>
         )}
+      </div>
+
+      {/* Stream Key */}
+      <div className="bg-[#0F0F16] border border-white/5 rounded-xl p-6" data-testid="stream-key-section">
+        <h2 className="text-lg font-semibold text-white mb-4">Stream Key</h2>
+        <div className="p-4 bg-[#1A1A24] rounded-lg">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-sm text-[#A0A0AB]">Your Stream Key</p>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={copyStreamKey}
+              className="text-[#00E5FF] hover:text-[#00B3CC] hover:bg-white/10 gap-2"
+              data-testid="copy-stream-key-btn"
+            >
+              {streamKeyCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+              {streamKeyCopied ? 'Copied!' : 'Copy'}
+            </Button>
+          </div>
+          <code className="text-sm text-[#00E5FF] bg-[#292938] px-4 py-3 rounded-lg block font-mono break-all" data-testid="stream-key-display">
+            {user?.stream_key || 'Loading...'}
+          </code>
+          <p className="text-xs text-[#A0A0AB] mt-3">
+            Use this key in your streaming software (OBS, Streamlabs, etc.) to broadcast to StreamVault.
+          </p>
+        </div>
       </div>
 
       {/* Recent Donations */}
