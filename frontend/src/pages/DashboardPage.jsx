@@ -5,7 +5,6 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
-import { LiveKitStreamer } from '../components/LiveKitPlayer';
 import { toast } from 'sonner';
 import axios from 'axios';
 
@@ -179,9 +178,23 @@ export default function DashboardPage() {
         
         {myStream ? (
           <div className="space-y-4">
-            {/* LiveKit Streamer Preview */}
-            <div className="aspect-video rounded-lg overflow-hidden bg-black">
-              <LiveKitStreamer roomName={`stream_${myStream.stream_id}`} />
+            {/* Stream Status Preview */}
+            <div className="aspect-video rounded-lg overflow-hidden bg-black flex items-center justify-center relative">
+              <div className="text-center p-6">
+                <Broadcast weight="fill" className="w-16 h-16 text-[#00E5FF]/30 mx-auto mb-4" />
+                <p className="text-white font-semibold text-lg mb-1">Stream is Active</p>
+                <p className="text-[#A0A0AB] text-sm mb-4">
+                  Use OBS or your preferred streaming software to broadcast.
+                </p>
+                <div className="inline-flex items-center gap-2 px-4 py-2 bg-[#1A1A24] rounded-lg border border-white/10">
+                  <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+                  <span className="text-sm text-green-400 font-medium">Waiting for stream input...</span>
+                </div>
+              </div>
+              <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2 py-1 bg-red-500 rounded text-xs font-bold text-white">
+                <span className="w-2 h-2 bg-white rounded-full live-indicator" />
+                LIVE
+              </div>
             </div>
 
             <div className="flex items-center justify-between p-4 bg-[#1A1A24] rounded-lg">
