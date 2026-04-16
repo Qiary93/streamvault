@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { MagnifyingGlass, Bell, SignOut, User, Broadcast } from '@phosphor-icons/react';
+import { MagnifyingGlass, Bell, SignOut, User, Broadcast, Shield } from '@phosphor-icons/react';
 import { Button } from './ui/button';
 import {
   DropdownMenu,
@@ -83,6 +83,14 @@ export default function Header() {
                       Dashboard
                     </Link>
                   </DropdownMenuItem>
+                  {user.role === 'admin' && (
+                    <DropdownMenuItem asChild>
+                      <Link to="/admin" className="flex items-center gap-2 text-[#A0A0AB] hover:text-white cursor-pointer">
+                        <Shield className="w-4 h-4" />
+                        Admin Panel
+                      </Link>
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuSeparator className="bg-white/10" />
                   <DropdownMenuItem 
                     onClick={handleLogout}

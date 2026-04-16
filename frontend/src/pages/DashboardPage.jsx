@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { Broadcast, Eye, CurrencyDollar, Users, Plus, X, Star, Copy, Check } from '@phosphor-icons/react';
+import { Broadcast, Eye, CurrencyDollar, Users, Plus, X, Star, Copy, Check, Record, Stop } from '@phosphor-icons/react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
@@ -20,6 +20,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
   const [streamKeyCopied, setStreamKeyCopied] = useState(false);
+  const [recording, setRecording] = useState(false);
   const [streamForm, setStreamForm] = useState({
     title: '',
     description: '',
@@ -192,14 +193,39 @@ export default function DashboardPage() {
                 <h3 className="text-white font-semibold">{myStream.title}</h3>
                 <p className="text-sm text-[#A0A0AB]">{myStream.category_name}</p>
               </div>
-              <Button
-                onClick={handleEndStream}
-                variant="destructive"
-                className="bg-red-500 hover:bg-red-600 text-white"
-                data-testid="end-stream-btn"
-              >
-                <X className="w-4 h-4 mr-2" /> End Stream
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  onClick={async () => {
+                    try {
+                      if (recording) {
+                        await axios.post(`${API}/api/streams/${myStream.stream_id}/record/stop`, {}, { withCredentials: true });
+                        setRecording(false);
+                        toast.success('Recording stopped');
+                      } else {
+                        await axios.post(`${API}/api/streams/${myStream.stream_id}/record/start`, {}, { withCredentials: true });
+                        setRecording(true);
+                        toast.success('Recording started');
+                      }
+                    } catch (error) {
+                      toast.error(error.response?.data?.detail || 'Recording error');
+                    }
+                  }}
+                  className={recording 
+                    ? 'bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30' 
+                    : 'bg-[#292938] text-white hover:bg-[#3D3D52]'}
+                  data-testid="record-btn"
+                >
+                  {recording ? <><Stop className="w-4 h-4 mr-2" /> Stop Recording</> : <><Record className="w-4 h-4 mr-2" /> Record</>}
+                </Button>
+                <Button
+                  onClick={handleEndStream}
+                  variant="destructive"
+                  className="bg-red-500 hover:bg-red-600 text-white"
+                  data-testid="end-stream-btn"
+                >
+                  <X className="w-4 h-4 mr-2" /> End Stream
+                </Button>
+              </div>
             </div>
           </div>
         ) : (

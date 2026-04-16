@@ -1140,6 +1140,10 @@ async def seed_data():
     await db.notifications.create_index([("user_id", 1), ("created_at", -1)])
     await db.subscriptions.create_index([("subscriber_id", 1), ("streamer_id", 1)])
     await db.subscriptions.create_index("expires_at")
+    await db.chat_bans.create_index([("stream_id", 1), ("user_id", 1)])
+    await db.chat_timeouts.create_index([("stream_id", 1), ("user_id", 1)])
+    await db.chat_timeouts.create_index("expires_at", expireAfterSeconds=0)
+    await db.chat_mods.create_index([("stream_id", 1), ("user_id", 1)])
     
     logger.info("Indexes created")
 
@@ -1211,11 +1215,52 @@ async def websocket_chat(websocket: WebSocket, stream_id: str):
     try:
         while True:
             data = await websocket.receive_json()
+            user_id = data.get("user_id", "anonymous")
+            
+            # Check if user is banned
+            ban = await db.chat_bans.find_one({
+                "stream_id": stream_id,
+                "user_id": user_id,
+                "active": True
+            })
+            if ban:
+                await websocket.send_json({"type": "system", "content": "You are banned from this chat."})
+                continue
+            
+            # Check if user is timed out
+            timeout = await db.chat_timeouts.find_one({
+                "stream_id": stream_id,
+                "user_id": user_id,
+                "expires_at": {"$gt": datetime.now(timezone.utc)}
+            })
+            if timeout:
+                remaining = int((timeout["expires_at"] - datetime.now(timezone.utc)).total_seconds())
+                await websocket.send_json({"type": "system", "content": f"You are timed out for {remaining}s."})
+                continue
+            
+            # Check slow mode
+            stream = await db.streams.find_one({"stream_id": stream_id}, {"_id": 0, "slow_mode": 1})
+            slow_mode = stream.get("slow_mode", 0) if stream else 0
+            if slow_mode > 0 and user_id != "anonymous":
+                last_msg = await db.chat_messages.find_one(
+                    {"stream_id": stream_id, "user_id": user_id},
+                    sort=[("created_at", -1)]
+                )
+                if last_msg:
+                    last_time = last_msg.get("created_at")
+                    if isinstance(last_time, str):
+                        last_time = datetime.fromisoformat(last_time)
+                    if last_time and last_time.tzinfo is None:
+                        last_time = last_time.replace(tzinfo=timezone.utc)
+                    diff = (datetime.now(timezone.utc) - last_time).total_seconds() if last_time else slow_mode + 1
+                    if diff < slow_mode:
+                        await websocket.send_json({"type": "system", "content": f"Slow mode active. Wait {int(slow_mode - diff)}s."})
+                        continue
             
             message_doc = {
                 "message_id": f"msg_{uuid.uuid4().hex[:12]}",
                 "stream_id": stream_id,
-                "user_id": data.get("user_id", "anonymous"),
+                "user_id": user_id,
                 "username": data.get("username", "Anonymous"),
                 "display_name": data.get("display_name"),
                 "avatar_url": data.get("avatar_url"),
@@ -1483,6 +1528,398 @@ async def get_user_vods(username: str, limit: int = 20):
             vod["category_name"] = category["name"]
     
     return vods
+
+# ============= MODERATION ENDPOINTS =============
+
+async def is_mod_or_streamer(user: dict, stream_id: str) -> bool:
+    """Check if user is the streamer or a moderator for this stream."""
+    stream = await db.streams.find_one({"stream_id": stream_id})
+    if not stream:
+        return False
+    if stream["user_id"] == user["user_id"]:
+        return True
+    if user.get("role") == "admin":
+        return True
+    mod = await db.chat_mods.find_one({
+        "stream_id": stream_id,
+        "user_id": user["user_id"],
+        "active": True
+    })
+    return mod is not None
+
+@api_router.post("/streams/{stream_id}/mod/{target_user_id}")
+async def assign_mod(stream_id: str, target_user_id: str, user: dict = Depends(get_current_user)):
+    stream = await db.streams.find_one({"stream_id": stream_id})
+    if not stream or stream["user_id"] != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Only the streamer can assign mods")
+    
+    target = await db.users.find_one({"user_id": target_user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    existing = await db.chat_mods.find_one({"stream_id": stream_id, "user_id": target_user_id, "active": True})
+    if existing:
+        raise HTTPException(status_code=400, detail="User is already a mod")
+    
+    await db.chat_mods.insert_one({
+        "mod_id": f"mod_{uuid.uuid4().hex[:12]}",
+        "stream_id": stream_id,
+        "user_id": target_user_id,
+        "username": target["username"],
+        "assigned_by": user["user_id"],
+        "active": True,
+        "created_at": datetime.now(timezone.utc)
+    })
+    
+    await db.notifications.insert_one({
+        "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+        "user_id": target_user_id,
+        "type": "mod",
+        "message": f"You've been made a moderator by {user.get('display_name') or user['username']}!",
+        "data": {"stream_id": stream_id},
+        "read": False,
+        "created_at": datetime.now(timezone.utc)
+    })
+    
+    return {"message": f"User {target['username']} is now a mod"}
+
+@api_router.delete("/streams/{stream_id}/mod/{target_user_id}")
+async def remove_mod(stream_id: str, target_user_id: str, user: dict = Depends(get_current_user)):
+    stream = await db.streams.find_one({"stream_id": stream_id})
+    if not stream or stream["user_id"] != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Only the streamer can remove mods")
+    
+    result = await db.chat_mods.update_one(
+        {"stream_id": stream_id, "user_id": target_user_id, "active": True},
+        {"$set": {"active": False}}
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Mod not found")
+    
+    return {"message": "Mod removed"}
+
+@api_router.get("/streams/{stream_id}/mods")
+async def get_mods(stream_id: str):
+    mods = await db.chat_mods.find(
+        {"stream_id": stream_id, "active": True}, {"_id": 0}
+    ).to_list(50)
+    return mods
+
+@api_router.post("/streams/{stream_id}/ban/{target_user_id}")
+async def ban_user(stream_id: str, target_user_id: str, request: Request, user: dict = Depends(get_current_user)):
+    if not await is_mod_or_streamer(user, stream_id):
+        raise HTTPException(status_code=403, detail="Not authorized to ban users")
+    
+    body = await request.json() if request.headers.get("content-type") == "application/json" else {}
+    reason = body.get("reason", "No reason provided")
+    
+    existing = await db.chat_bans.find_one({"stream_id": stream_id, "user_id": target_user_id, "active": True})
+    if existing:
+        raise HTTPException(status_code=400, detail="User already banned")
+    
+    target = await db.users.find_one({"user_id": target_user_id}, {"_id": 0, "username": 1})
+    
+    await db.chat_bans.insert_one({
+        "ban_id": f"ban_{uuid.uuid4().hex[:12]}",
+        "stream_id": stream_id,
+        "user_id": target_user_id,
+        "username": target["username"] if target else "unknown",
+        "banned_by": user["user_id"],
+        "reason": reason,
+        "active": True,
+        "created_at": datetime.now(timezone.utc)
+    })
+    
+    # Broadcast ban event
+    await chat_manager.broadcast(stream_id, {
+        "type": "moderation",
+        "action": "ban",
+        "target_user_id": target_user_id,
+        "target_username": target["username"] if target else "unknown",
+        "moderator": user.get("display_name") or user["username"]
+    })
+    
+    return {"message": "User banned from chat"}
+
+@api_router.delete("/streams/{stream_id}/ban/{target_user_id}")
+async def unban_user(stream_id: str, target_user_id: str, user: dict = Depends(get_current_user)):
+    if not await is_mod_or_streamer(user, stream_id):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    result = await db.chat_bans.update_one(
+        {"stream_id": stream_id, "user_id": target_user_id, "active": True},
+        {"$set": {"active": False}}
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Ban not found")
+    
+    return {"message": "User unbanned"}
+
+@api_router.get("/streams/{stream_id}/bans")
+async def get_bans(stream_id: str, user: dict = Depends(get_current_user)):
+    if not await is_mod_or_streamer(user, stream_id):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    bans = await db.chat_bans.find(
+        {"stream_id": stream_id, "active": True}, {"_id": 0}
+    ).to_list(100)
+    return bans
+
+@api_router.post("/streams/{stream_id}/timeout/{target_user_id}")
+async def timeout_user(stream_id: str, target_user_id: str, request: Request, user: dict = Depends(get_current_user)):
+    if not await is_mod_or_streamer(user, stream_id):
+        raise HTTPException(status_code=403, detail="Not authorized to timeout users")
+    
+    body = await request.json() if request.headers.get("content-type") == "application/json" else {}
+    duration = body.get("duration", 60)  # Default 1 min
+    reason = body.get("reason", "")
+    
+    if duration not in [60, 300, 600]:
+        duration = 60
+    
+    target = await db.users.find_one({"user_id": target_user_id}, {"_id": 0, "username": 1})
+    
+    await db.chat_timeouts.update_one(
+        {"stream_id": stream_id, "user_id": target_user_id},
+        {"$set": {
+            "timeout_id": f"to_{uuid.uuid4().hex[:12]}",
+            "stream_id": stream_id,
+            "user_id": target_user_id,
+            "username": target["username"] if target else "unknown",
+            "timed_out_by": user["user_id"],
+            "duration": duration,
+            "reason": reason,
+            "expires_at": datetime.now(timezone.utc) + timedelta(seconds=duration),
+            "created_at": datetime.now(timezone.utc)
+        }},
+        upsert=True
+    )
+    
+    await chat_manager.broadcast(stream_id, {
+        "type": "moderation",
+        "action": "timeout",
+        "target_user_id": target_user_id,
+        "target_username": target["username"] if target else "unknown",
+        "duration": duration,
+        "moderator": user.get("display_name") or user["username"]
+    })
+    
+    return {"message": f"User timed out for {duration}s"}
+
+@api_router.put("/streams/{stream_id}/slow-mode")
+async def set_slow_mode(stream_id: str, request: Request, user: dict = Depends(get_current_user)):
+    if not await is_mod_or_streamer(user, stream_id):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    body = await request.json()
+    duration = body.get("duration", 0)  # 0 = off, 3/5/10/30 seconds
+    
+    if duration not in [0, 3, 5, 10, 30]:
+        raise HTTPException(status_code=400, detail="Invalid slow mode duration")
+    
+    await db.streams.update_one(
+        {"stream_id": stream_id},
+        {"$set": {"slow_mode": duration}}
+    )
+    
+    await chat_manager.broadcast(stream_id, {
+        "type": "moderation",
+        "action": "slow_mode",
+        "duration": duration,
+        "moderator": user.get("display_name") or user["username"]
+    })
+    
+    return {"message": f"Slow mode {'disabled' if duration == 0 else f'set to {duration}s'}"}
+
+@api_router.get("/streams/{stream_id}/mod-status")
+async def get_mod_status(stream_id: str, user: dict = Depends(get_current_user)):
+    """Check if current user is a mod/streamer for this stream."""
+    is_mod = await is_mod_or_streamer(user, stream_id)
+    stream = await db.streams.find_one({"stream_id": stream_id}, {"_id": 0, "slow_mode": 1, "user_id": 1})
+    return {
+        "is_mod": is_mod,
+        "is_streamer": stream["user_id"] == user["user_id"] if stream else False,
+        "slow_mode": stream.get("slow_mode", 0) if stream else 0
+    }
+
+# ============= ADMIN - S3 STORAGE CONFIG =============
+
+@api_router.get("/admin/storage-config")
+async def get_storage_config(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    config = await db.admin_config.find_one({"type": "s3_storage"}, {"_id": 0})
+    if config:
+        # Mask the secret key
+        if config.get("secret_key"):
+            config["secret_key"] = config["secret_key"][:4] + "***" + config["secret_key"][-4:]
+    return config or {"type": "s3_storage", "configured": False}
+
+@api_router.post("/admin/storage-config")
+async def save_storage_config(request: Request, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    body = await request.json()
+    
+    config = {
+        "type": "s3_storage",
+        "provider": body.get("provider", "wasabi"),
+        "endpoint": body.get("endpoint", ""),
+        "bucket": body.get("bucket", ""),
+        "region": body.get("region", ""),
+        "access_key": body.get("access_key", ""),
+        "secret_key": body.get("secret_key", ""),
+        "force_path_style": body.get("force_path_style", True),
+        "configured": True,
+        "updated_at": datetime.now(timezone.utc)
+    }
+    
+    await db.admin_config.update_one(
+        {"type": "s3_storage"},
+        {"$set": config},
+        upsert=True
+    )
+    
+    return {"message": "Storage configuration saved successfully"}
+
+@api_router.delete("/admin/storage-config")
+async def delete_storage_config(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    await db.admin_config.delete_one({"type": "s3_storage"})
+    return {"message": "Storage configuration deleted"}
+
+# ============= LIVEKIT EGRESS (RECORDING) =============
+
+@api_router.post("/streams/{stream_id}/record/start")
+async def start_recording(stream_id: str, user: dict = Depends(get_current_user)):
+    stream = await db.streams.find_one({"stream_id": stream_id})
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    if stream["user_id"] != user["user_id"] and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    # Get S3 config
+    s3_config = await db.admin_config.find_one({"type": "s3_storage"}, {"_id": 0})
+    if not s3_config or not s3_config.get("configured"):
+        raise HTTPException(status_code=400, detail="S3 storage not configured. Ask admin to set up storage in Admin panel.")
+    
+    if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
+        raise HTTPException(status_code=500, detail="LiveKit not configured")
+    
+    from livekit.api import LiveKitAPI, RoomCompositeEgressRequest, SegmentedFileOutput, S3Upload, EncodingOptionsPreset
+    
+    try:
+        room_name = f"stream_{stream_id}"
+        
+        s3_upload = S3Upload(
+            bucket=s3_config["bucket"],
+            region=s3_config["region"],
+            access_key=s3_config["access_key"],
+            secret=s3_config["secret_key"],
+            force_path_style=s3_config.get("force_path_style", True),
+            endpoint=s3_config["endpoint"],
+        )
+        
+        egress_req = RoomCompositeEgressRequest(
+            room_name=room_name,
+            layout="speaker",
+            segment_outputs=[
+                SegmentedFileOutput(
+                    filename_prefix=f"recordings/{stream_id}/{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}",
+                    playlist_name="playlist.m3u8",
+                    segment_duration=4,
+                    s3=s3_upload,
+                ),
+            ],
+        )
+        
+        async with LiveKitAPI(url=LIVEKIT_URL, api_key=LIVEKIT_API_KEY, api_secret=LIVEKIT_API_SECRET) as lkapi:
+            res = await lkapi.egress.start_room_composite_egress(egress_req)
+        
+        egress_id = res.egress_id
+        
+        await db.streams.update_one(
+            {"stream_id": stream_id},
+            {"$set": {"recording": True, "egress_id": egress_id}}
+        )
+        
+        await db.recordings.insert_one({
+            "recording_id": f"rec_{uuid.uuid4().hex[:12]}",
+            "stream_id": stream_id,
+            "egress_id": egress_id,
+            "status": "recording",
+            "storage_path": f"recordings/{stream_id}/",
+            "started_at": datetime.now(timezone.utc),
+            "created_at": datetime.now(timezone.utc)
+        })
+        
+        return {"message": "Recording started", "egress_id": egress_id}
+    
+    except Exception as e:
+        logger.error(f"Egress start error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start recording: {str(e)}")
+
+@api_router.post("/streams/{stream_id}/record/stop")
+async def stop_recording(stream_id: str, user: dict = Depends(get_current_user)):
+    stream = await db.streams.find_one({"stream_id": stream_id})
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    if stream["user_id"] != user["user_id"] and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    egress_id = stream.get("egress_id")
+    if not egress_id:
+        raise HTTPException(status_code=400, detail="No active recording")
+    
+    from livekit.api import LiveKitAPI, StopEgressRequest
+    
+    try:
+        async with LiveKitAPI(url=LIVEKIT_URL, api_key=LIVEKIT_API_KEY, api_secret=LIVEKIT_API_SECRET) as lkapi:
+            await lkapi.egress.stop_egress(StopEgressRequest(egress_id=egress_id))
+        
+        await db.streams.update_one(
+            {"stream_id": stream_id},
+            {"$set": {"recording": False}, "$unset": {"egress_id": ""}}
+        )
+        
+        s3_config = await db.admin_config.find_one({"type": "s3_storage"}, {"_id": 0})
+        storage_url = ""
+        if s3_config:
+            endpoint = s3_config.get("endpoint", "").rstrip("/")
+            bucket = s3_config.get("bucket", "")
+            storage_url = f"https://{bucket}.{endpoint}/recordings/{stream_id}/playlist.m3u8"
+        
+        await db.recordings.update_one(
+            {"stream_id": stream_id, "egress_id": egress_id},
+            {"$set": {
+                "status": "completed",
+                "playback_url": storage_url,
+                "ended_at": datetime.now(timezone.utc)
+            }}
+        )
+        
+        # Update stream with VOD URL
+        await db.streams.update_one(
+            {"stream_id": stream_id},
+            {"$set": {"vod_url": storage_url}}
+        )
+        
+        return {"message": "Recording stopped", "playback_url": storage_url}
+    
+    except Exception as e:
+        logger.error(f"Egress stop error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to stop recording: {str(e)}")
+
+@api_router.get("/streams/{stream_id}/recordings")
+async def get_stream_recordings(stream_id: str):
+    recordings = await db.recordings.find(
+        {"stream_id": stream_id}, {"_id": 0}
+    ).sort("created_at", -1).to_list(20)
+    return recordings
 
 # Include the router
 app.include_router(api_router)

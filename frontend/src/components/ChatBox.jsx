@@ -4,6 +4,7 @@ import { PaperPlaneRight } from '@phosphor-icons/react';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Button } from './ui/button';
 import { ScrollArea } from './ui/scroll-area';
+import ModControls from './ModControls';
 import axios from 'axios';
 
 const API = process.env.REACT_APP_BACKEND_URL;
@@ -30,6 +31,8 @@ export default function ChatBox({ streamId }) {
   const scrollRef = useRef(null);
   const wsRef = useRef(null);
   const reconnectTimerRef = useRef(null);
+
+  const [systemMessage, setSystemMessage] = useState('');
 
   // Fetch initial messages via REST
   useEffect(() => {
@@ -59,8 +62,37 @@ export default function ChatBox({ streamId }) {
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
+        
+        // Handle system messages (bans, timeouts, slow mode)
+        if (message.type === 'system') {
+          setSystemMessage(message.content);
+          setTimeout(() => setSystemMessage(''), 5000);
+          return;
+        }
+        
+        // Handle moderation broadcasts
+        if (message.type === 'moderation') {
+          const modMsg = {
+            message_id: `mod_${Date.now()}`,
+            type: 'moderation',
+            content: message.action === 'ban' 
+              ? `${message.target_username} was banned by ${message.moderator}`
+              : message.action === 'timeout'
+              ? `${message.target_username} was timed out for ${message.duration}s by ${message.moderator}`
+              : message.action === 'slow_mode'
+              ? message.duration > 0 ? `Slow mode set to ${message.duration}s by ${message.moderator}` : `Slow mode disabled by ${message.moderator}`
+              : '',
+            username: 'System',
+            stream_id: streamId,
+            created_at: new Date().toISOString()
+          };
+          if (modMsg.content) {
+            setMessages(prev => [...prev, modMsg]);
+          }
+          return;
+        }
+        
         setMessages(prev => {
-          // Deduplicate by message_id
           if (prev.some(m => m.message_id === message.message_id)) return prev;
           return [...prev, message];
         });
@@ -140,29 +172,52 @@ export default function ChatBox({ streamId }) {
           <h3 className="font-semibold text-white">Stream Chat</h3>
           <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400' : 'bg-yellow-400'}`} />
         </div>
-        <span className="text-xs text-[#A0A0AB]">{messages.length} msgs</span>
+        <div className="flex items-center gap-2">
+          <ModControls streamId={streamId} />
+          <span className="text-xs text-[#A0A0AB]">{messages.length} msgs</span>
+        </div>
       </div>
+
+      {/* System message */}
+      {systemMessage && (
+        <div className="px-4 py-2 bg-red-500/10 border-b border-red-500/20 text-red-400 text-xs text-center">
+          {systemMessage}
+        </div>
+      )}
 
       {/* Messages */}
       <ScrollArea className="flex-1 p-4" ref={scrollRef}>
         <div className="space-y-3">
           {messages.map((msg) => (
-            <div key={msg.message_id} className="flex gap-2 chat-message-enter" data-testid={`chat-msg-${msg.message_id}`}>
-              <Avatar className="w-6 h-6 flex-shrink-0">
-                <AvatarImage src={msg.avatar_url} alt={msg.username} />
-                <AvatarFallback className="bg-[#292938] text-[#00E5FF] text-xs">
-                  {(msg.display_name || msg.username)?.charAt(0).toUpperCase()}
-                </AvatarFallback>
-              </Avatar>
-              <div className="min-w-0">
-                <span 
-                  className="text-sm font-semibold mr-2"
-                  style={{ color: getUsernameColor(msg.username) }}
-                >
-                  {msg.display_name || msg.username}
+            <div key={msg.message_id} className={`flex gap-2 chat-message-enter group ${msg.type === 'moderation' ? 'justify-center' : ''}`} data-testid={`chat-msg-${msg.message_id}`}>
+              {msg.type === 'moderation' ? (
+                <span className="text-xs text-yellow-400 italic bg-yellow-500/10 px-3 py-1 rounded-full">
+                  {msg.content}
                 </span>
-                <span className="text-sm text-[#A0A0AB] break-words">{msg.content}</span>
-              </div>
+              ) : (
+                <>
+                  <Avatar className="w-6 h-6 flex-shrink-0">
+                    <AvatarImage src={msg.avatar_url} alt={msg.username} />
+                    <AvatarFallback className="bg-[#292938] text-[#00E5FF] text-xs">
+                      {(msg.display_name || msg.username)?.charAt(0).toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1">
+                      <span 
+                        className="text-sm font-semibold mr-1"
+                        style={{ color: getUsernameColor(msg.username) }}
+                      >
+                        {msg.display_name || msg.username}
+                      </span>
+                      {msg.user_id && msg.user_id !== user?.user_id && (
+                        <ModControls streamId={streamId} targetUserId={msg.user_id} targetUsername={msg.username} />
+                      )}
+                    </div>
+                    <span className="text-sm text-[#A0A0AB] break-words">{msg.content}</span>
+                  </div>
+                </>
+              )}
             </div>
           ))}
           {messages.length === 0 && (

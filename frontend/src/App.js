@@ -17,6 +17,7 @@ import SearchPage from './pages/SearchPage';
 import VODPage from './pages/VODPage';
 import VODDetailPage from './pages/VODDetailPage';
 import SubscriptionSuccess from './pages/SubscriptionSuccess';
+import AdminPage from './pages/AdminPage';
 
 // Layout
 import Layout from './components/Layout';
@@ -72,6 +73,11 @@ function AppRouter() {
         <Route path="/dashboard" element={
           <ProtectedRoute>
             <DashboardPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/admin" element={
+          <ProtectedRoute>
+            <AdminPage />
           </ProtectedRoute>
         } />
       </Route>
