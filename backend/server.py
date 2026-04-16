@@ -637,7 +637,7 @@ async def get_categories():
     categories = await db.categories.find({}, {"_id": 0}).to_list(100)
     
     for cat in categories:
-        count = await db.streams.count_documents({"category_id": cat["category_id"], "is_live": True})
+        count = await db.streams.count_documents({"category_id": cat["category_id"], "is_live": True, "broadcasting": True})
         cat["stream_count"] = count
     
     return categories
@@ -649,7 +649,7 @@ async def get_category(category_id: str):
         raise HTTPException(status_code=404, detail="Category not found")
     
     streams = await db.streams.find(
-        {"category_id": category_id, "is_live": True}, {"_id": 0}
+        {"category_id": category_id, "is_live": True, "broadcasting": True}, {"_id": 0}
     ).sort("viewer_count", -1).to_list(50)
     
     for stream in streams:
@@ -666,7 +666,7 @@ async def get_category(category_id: str):
 
 @api_router.get("/streams")
 async def get_streams(category_id: Optional[str] = None, limit: int = 20, offset: int = 0):
-    query = {"is_live": True}
+    query = {"is_live": True, "broadcasting": True}
     if category_id:
         query["category_id"] = category_id
     
@@ -779,6 +779,7 @@ async def create_stream(stream_data: StreamCreate, user: dict = Depends(get_curr
         "thumbnail_url": stream_data.thumbnail_url,
         "viewer_count": 0,
         "is_live": True,
+        "broadcasting": False,
         "room_name": room_name,
         "whip_url": whip_url,
         "whip_token": whip_token,
@@ -842,10 +843,52 @@ async def end_stream(stream_id: str, user: dict = Depends(get_current_user)):
         except Exception as e:
             logger.error(f"Failed to delete ingress: {e}")
     
-    await db.streams.update_one({"stream_id": stream_id}, {"$set": {"is_live": False, "ended_at": datetime.now(timezone.utc)}})
+    await db.streams.update_one({"stream_id": stream_id}, {"$set": {"is_live": False, "broadcasting": False, "ended_at": datetime.now(timezone.utc)}})
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"is_streaming": False}})
     
     return {"message": "Stream ended"}
+
+@api_router.get("/streams/{stream_id}/check-broadcast")
+async def check_broadcast_status(stream_id: str):
+    """Check if the streamer is actually broadcasting (connected via OBS)."""
+    stream = await db.streams.find_one({"stream_id": stream_id}, {"_id": 0, "ingress_id": 1, "room_name": 1, "broadcasting": 1})
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    
+    ingress_id = stream.get("ingress_id")
+    is_broadcasting = stream.get("broadcasting", False)
+    
+    if not ingress_id or not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET or not LIVEKIT_URL:
+        return {"broadcasting": is_broadcasting}
+    
+    try:
+        from livekit.protocol.ingress import ListIngressRequest
+        async with LiveKitAPI(
+            url=LIVEKIT_URL,
+            api_key=LIVEKIT_API_KEY,
+            api_secret=LIVEKIT_API_SECRET
+        ) as lkapi:
+            result = await lkapi.ingress.list_ingress(ListIngressRequest(ingress_id=ingress_id))
+            
+            if result and len(result) > 0:
+                ingress = result[0]
+                # Status 0=STANDBY, 1=BUFFERING, 2=ENDPOINT_PUBLISHING
+                status = ingress.state.status if ingress.state else 0
+                now_broadcasting = status >= 1  # BUFFERING or PUBLISHING means OBS connected
+                
+                if now_broadcasting != is_broadcasting:
+                    await db.streams.update_one(
+                        {"stream_id": stream_id},
+                        {"$set": {"broadcasting": now_broadcasting}}
+                    )
+                    if now_broadcasting:
+                        logger.info(f"Stream {stream_id} is now broadcasting")
+                
+                return {"broadcasting": now_broadcasting, "ingress_status": status}
+    except Exception as e:
+        logger.error(f"Check broadcast error: {e}")
+    
+    return {"broadcasting": is_broadcasting}
 
 @api_router.get("/my/stream")
 async def get_my_stream(user: dict = Depends(get_current_user)):
@@ -1086,7 +1129,7 @@ async def search(q: str, type: str = "all", limit: int = 20):
         ).to_list(100)
         matching_cat_ids = [c["category_id"] for c in matching_cats]
         
-        stream_query = {"is_live": True, "$or": [
+        stream_query = {"is_live": True, "broadcasting": True, "$or": [
             {"title": {"$regex": q, "$options": "i"}},
             {"description": {"$regex": q, "$options": "i"}},
             {"category_id": {"$in": matching_cat_ids}} if matching_cat_ids else {"_never": True}
@@ -1129,7 +1172,7 @@ async def search(q: str, type: str = "all", limit: int = 20):
 @api_router.get("/featured")
 async def get_featured():
     top_streams = await db.streams.find(
-        {"is_live": True}, {"_id": 0}
+        {"is_live": True, "broadcasting": True}, {"_id": 0, "whip_token": 0}
     ).sort("viewer_count", -1).limit(6).to_list(6)
     
     for stream in top_streams:

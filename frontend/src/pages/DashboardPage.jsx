@@ -22,6 +22,7 @@ export default function DashboardPage() {
   const [whipUrlCopied, setWhipUrlCopied] = useState(false);
   const [whipTokenCopied, setWhipTokenCopied] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [broadcasting, setBroadcasting] = useState(false);
   const [thumbnailFile, setThumbnailFile] = useState(null);
   const [thumbnailPreview, setThumbnailPreview] = useState(null);
   const [uploadingThumb, setUploadingThumb] = useState(false);
@@ -64,6 +65,28 @@ export default function DashboardPage() {
       setTimeout(() => setStreamKeyCopied(false), 2000);
     }
   };
+
+  // Poll broadcast status when stream is active
+  useEffect(() => {
+    if (!myStream?.stream_id) return;
+    
+    const checkBroadcast = async () => {
+      try {
+        const res = await axios.get(`${API}/api/streams/${myStream.stream_id}/check-broadcast`);
+        const wasBroadcasting = broadcasting;
+        setBroadcasting(res.data.broadcasting);
+        if (res.data.broadcasting && !wasBroadcasting) {
+          toast.success('OBS connected! Your stream is now live to viewers.');
+        }
+      } catch (err) {
+        // ignore
+      }
+    };
+    
+    checkBroadcast();
+    const interval = setInterval(checkBroadcast, 5000);
+    return () => clearInterval(interval);
+  }, [myStream?.stream_id]);
 
   const handleThumbnailSelect = (e) => {
     const file = e.target.files[0];
@@ -222,19 +245,37 @@ export default function DashboardPage() {
             {/* Stream Status Preview */}
             <div className="aspect-video rounded-lg overflow-hidden bg-black flex items-center justify-center relative">
               <div className="text-center p-6">
-                <Broadcast weight="fill" className="w-16 h-16 text-[#00E5FF]/30 mx-auto mb-4" />
-                <p className="text-white font-semibold text-lg mb-1">Stream is Active</p>
-                <p className="text-[#A0A0AB] text-sm mb-4">
-                  Use OBS or your preferred streaming software to broadcast.
-                </p>
-                <div className="inline-flex items-center gap-2 px-4 py-2 bg-[#1A1A24] rounded-lg border border-white/10">
-                  <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-                  <span className="text-sm text-green-400 font-medium">Waiting for stream input...</span>
-                </div>
+                <Broadcast weight="fill" className={`w-16 h-16 mx-auto mb-4 ${broadcasting ? 'text-[#00E5FF]' : 'text-[#00E5FF]/30'}`} />
+                {broadcasting ? (
+                  <>
+                    <p className="text-white font-semibold text-lg mb-1">Broadcasting Live!</p>
+                    <p className="text-[#A0A0AB] text-sm mb-4">
+                      Your stream is visible to viewers on the platform.
+                    </p>
+                    <div className="inline-flex items-center gap-2 px-4 py-2 bg-green-500/10 rounded-lg border border-green-500/20">
+                      <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+                      <span className="text-sm text-green-400 font-medium">OBS connected - Stream is live</span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-white font-semibold text-lg mb-1">Waiting for OBS Connection</p>
+                    <p className="text-[#A0A0AB] text-sm mb-4">
+                      Open OBS, paste the Server URL and Bearer Token below, then click "Start Streaming".
+                    </p>
+                    <div className="inline-flex items-center gap-2 px-4 py-2 bg-yellow-500/10 rounded-lg border border-yellow-500/20">
+                      <span className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
+                      <span className="text-sm text-yellow-400 font-medium">Waiting for stream input...</span>
+                    </div>
+                    <p className="text-xs text-[#A0A0AB] mt-3">
+                      Your stream will appear on the platform once OBS is connected.
+                    </p>
+                  </>
+                )}
               </div>
-              <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2 py-1 bg-red-500 rounded text-xs font-bold text-white">
-                <span className="w-2 h-2 bg-white rounded-full live-indicator" />
-                LIVE
+              <div className={`absolute top-3 left-3 flex items-center gap-1.5 px-2 py-1 rounded text-xs font-bold text-white ${broadcasting ? 'bg-red-500' : 'bg-yellow-600'}`}>
+                <span className={`w-2 h-2 rounded-full ${broadcasting ? 'bg-white live-indicator' : 'bg-white/50'}`} />
+                {broadcasting ? 'LIVE' : 'STANDBY'}
               </div>
             </div>
 
