@@ -1,8 +1,8 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi.responses import JSONResponse, Response
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
@@ -56,6 +56,44 @@ api_router = APIRouter(prefix="/api")
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# ============= OBJECT STORAGE =============
+
+STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
+EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+APP_NAME = "streamvault"
+_storage_key = None
+
+def init_storage():
+    global _storage_key
+    if _storage_key:
+        return _storage_key
+    import requests as req_lib
+    resp = req_lib.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_KEY}, timeout=30)
+    resp.raise_for_status()
+    _storage_key = resp.json()["storage_key"]
+    return _storage_key
+
+def put_object(path: str, data: bytes, content_type: str) -> dict:
+    import requests as req_lib
+    key = init_storage()
+    resp = req_lib.put(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key, "Content-Type": content_type},
+        data=data, timeout=120
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+def get_object(path: str):
+    import requests as req_lib
+    key = init_storage()
+    resp = req_lib.get(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key}, timeout=60
+    )
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
 # ============= WEBSOCKET CHAT MANAGER =============
 
@@ -1114,6 +1152,64 @@ async def get_featured():
         "recommended_streamers": recommended_users
     }
 
+# ============= THUMBNAIL UPLOAD =============
+
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+MAX_THUMBNAIL_SIZE = 5 * 1024 * 1024  # 5MB
+
+@api_router.post("/upload/thumbnail")
+async def upload_thumbnail(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(status_code=400, detail="Only JPEG, PNG, WebP, and GIF images are allowed")
+    
+    data = await file.read()
+    if len(data) > MAX_THUMBNAIL_SIZE:
+        raise HTTPException(status_code=400, detail="File size exceeds 5MB limit")
+    
+    ext = file.filename.split(".")[-1] if "." in file.filename else "png"
+    path = f"{APP_NAME}/thumbnails/{user['user_id']}/{uuid.uuid4().hex}.{ext}"
+    
+    try:
+        result = put_object(path, data, file.content_type or "image/png")
+        
+        await db.files.insert_one({
+            "file_id": f"file_{uuid.uuid4().hex[:12]}",
+            "storage_path": result["path"],
+            "original_filename": file.filename,
+            "content_type": file.content_type,
+            "size": result.get("size", len(data)),
+            "user_id": user["user_id"],
+            "type": "thumbnail",
+            "is_deleted": False,
+            "created_at": datetime.now(timezone.utc)
+        })
+        
+        # Return the serve URL
+        return {
+            "path": result["path"],
+            "url": f"/api/files/{result['path']}"
+        }
+    except Exception as e:
+        logger.error(f"Thumbnail upload error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload thumbnail")
+
+@api_router.get("/files/{path:path}")
+async def serve_file(path: str):
+    record = await db.files.find_one({"storage_path": path, "is_deleted": False})
+    if not record:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    try:
+        data, content_type = get_object(path)
+        return Response(
+            content=data,
+            media_type=record.get("content_type", content_type),
+            headers={"Cache-Control": "public, max-age=86400"}
+        )
+    except Exception as e:
+        logger.error(f"File serve error: {e}")
+        raise HTTPException(status_code=404, detail="File not found")
+
 # ============= SEED DATA =============
 
 async def seed_data():
@@ -2036,6 +2132,11 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup():
     await seed_data()
+    try:
+        init_storage()
+        logger.info("Object storage initialized")
+    except Exception as e:
+        logger.error(f"Storage init failed: {e}")
 
 @app.on_event("shutdown")
 async def shutdown():

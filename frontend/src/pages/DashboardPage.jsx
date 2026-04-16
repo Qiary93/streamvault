@@ -22,10 +22,14 @@ export default function DashboardPage() {
   const [whipUrlCopied, setWhipUrlCopied] = useState(false);
   const [whipTokenCopied, setWhipTokenCopied] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [thumbnailFile, setThumbnailFile] = useState(null);
+  const [thumbnailPreview, setThumbnailPreview] = useState(null);
+  const [uploadingThumb, setUploadingThumb] = useState(false);
   const [streamForm, setStreamForm] = useState({
     title: '',
     description: '',
-    category_id: ''
+    category_id: '',
+    thumbnail_url: ''
   });
 
   useEffect(() => {
@@ -61,6 +65,21 @@ export default function DashboardPage() {
     }
   };
 
+  const handleThumbnailSelect = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type)) {
+      toast.error('Only JPEG, PNG, WebP, and GIF images are allowed');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('File size exceeds 5MB limit');
+      return;
+    }
+    setThumbnailFile(file);
+    setThumbnailPreview(URL.createObjectURL(file));
+  };
+
   const handleCreateStream = async (e) => {
     e.preventDefault();
     
@@ -70,13 +89,33 @@ export default function DashboardPage() {
     }
 
     try {
-      const response = await axios.post(`${API}/api/streams`, streamForm, {
-        withCredentials: true
-      });
+      let thumbnailUrl = streamForm.thumbnail_url;
+
+      // Upload thumbnail if selected
+      if (thumbnailFile) {
+        setUploadingThumb(true);
+        const formData = new FormData();
+        formData.append('file', thumbnailFile);
+        const uploadRes = await axios.post(`${API}/api/upload/thumbnail`, formData, {
+          withCredentials: true,
+          headers: { 'Content-Type': 'multipart/form-data' }
+        });
+        thumbnailUrl = `${API}${uploadRes.data.url}`;
+        setUploadingThumb(false);
+      }
+
+      const response = await axios.post(`${API}/api/streams`, {
+        ...streamForm,
+        thumbnail_url: thumbnailUrl
+      }, { withCredentials: true });
+
       setMyStream(response.data);
       setCreateOpen(false);
+      setThumbnailFile(null);
+      setThumbnailPreview(null);
       toast.success('Stream started!');
     } catch (error) {
+      setUploadingThumb(false);
       toast.error(error.response?.data?.detail || 'Failed to create stream');
     }
   };
@@ -209,6 +248,45 @@ export default function DashboardPage() {
                 <p className="text-sm text-[#A0A0AB]">{myStream.category_name}</p>
               </div>
               <div className="flex items-center gap-2">
+                {/* Update Thumbnail */}
+                <label className="cursor-pointer">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="text-[#A0A0AB] hover:text-[#00E5FF] hover:bg-white/10"
+                    asChild
+                    data-testid="update-thumbnail-btn"
+                  >
+                    <span>Update Thumbnail</span>
+                  </Button>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files[0];
+                      if (!file) return;
+                      if (file.size > 5 * 1024 * 1024) { toast.error('Max 5MB'); return; }
+                      try {
+                        const formData = new FormData();
+                        formData.append('file', file);
+                        const uploadRes = await axios.post(`${API}/api/upload/thumbnail`, formData, {
+                          withCredentials: true,
+                          headers: { 'Content-Type': 'multipart/form-data' }
+                        });
+                        const thumbUrl = `${API}${uploadRes.data.url}`;
+                        await axios.put(`${API}/api/streams/${myStream.stream_id}`, {
+                          thumbnail_url: thumbUrl
+                        }, { withCredentials: true });
+                        setMyStream(prev => ({ ...prev, thumbnail_url: thumbUrl }));
+                        toast.success('Thumbnail updated!');
+                      } catch (err) {
+                        toast.error('Failed to update thumbnail');
+                      }
+                    }}
+                    data-testid="update-thumbnail-input"
+                  />
+                </label>
                 <Button
                   onClick={async () => {
                     try {
@@ -300,12 +378,49 @@ export default function DashboardPage() {
                   />
                 </div>
 
+                {/* Thumbnail Upload */}
+                <div>
+                  <label className="text-sm text-[#A0A0AB] block mb-1.5">Stream Thumbnail</label>
+                  <div className="space-y-3">
+                    {thumbnailPreview ? (
+                      <div className="relative aspect-video rounded-lg overflow-hidden bg-[#1A1A24] border border-white/10">
+                        <img src={thumbnailPreview} alt="Thumbnail preview" className="w-full h-full object-cover" />
+                        <button
+                          type="button"
+                          onClick={() => { setThumbnailFile(null); setThumbnailPreview(null); }}
+                          className="absolute top-2 right-2 p-1.5 bg-black/70 rounded-full text-white hover:bg-black/90 transition-colors"
+                          data-testid="remove-thumbnail-btn"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <label
+                        className="flex flex-col items-center justify-center w-full h-32 bg-[#1A1A24] border-2 border-dashed border-white/10 rounded-lg cursor-pointer hover:border-[#00E5FF]/50 transition-colors"
+                        data-testid="thumbnail-upload-area"
+                      >
+                        <Plus className="w-8 h-8 text-[#A0A0AB] mb-2" />
+                        <span className="text-sm text-[#A0A0AB]">Click to upload thumbnail</span>
+                        <span className="text-xs text-[#A0A0AB] mt-1">JPEG, PNG, WebP, GIF (max 5MB)</span>
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp,image/gif"
+                          onChange={handleThumbnailSelect}
+                          className="hidden"
+                          data-testid="thumbnail-file-input"
+                        />
+                      </label>
+                    )}
+                  </div>
+                </div>
+
                 <Button 
                   type="submit"
-                  className="w-full bg-[#00E5FF] text-black font-bold hover:bg-[#00B3CC]"
+                  disabled={uploadingThumb}
+                  className="w-full bg-[#00E5FF] text-black font-bold hover:bg-[#00B3CC] disabled:opacity-50"
                   data-testid="create-stream-submit-btn"
                 >
-                  Go Live
+                  {uploadingThumb ? 'Uploading thumbnail...' : 'Go Live'}
                 </Button>
               </form>
             </DialogContent>
