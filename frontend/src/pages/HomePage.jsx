@@ -116,7 +116,7 @@ export default function HomePage() {
             {featured.recommended_streamers.map((streamer) => (
               <Link
                 key={streamer.user_id}
-                to={`/user/${streamer.username}`}
+                to={streamer.active_stream_id ? `/stream/${streamer.active_stream_id}` : `/user/${streamer.username}`}
                 className="group flex flex-col items-center p-4 bg-[#0F0F16] border border-white/5 rounded-xl hover:border-[#00E5FF]/30 transition-colors"
                 data-testid={`streamer-card-${streamer.user_id}`}
               >

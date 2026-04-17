@@ -1207,6 +1207,16 @@ async def get_featured():
         {"is_streaming": True}, {"_id": 0, "password_hash": 0, "stream_key": 0}
     ).sort("follower_count", -1).limit(10).to_list(10)
     
+    # Attach active stream_id for live streamers
+    for u in recommended_users:
+        stream = await db.streams.find_one(
+            {"user_id": u["user_id"], "is_live": True},
+            {"_id": 0, "stream_id": 1, "broadcasting": 1}
+        )
+        if stream:
+            u["active_stream_id"] = stream["stream_id"]
+            u["broadcasting"] = stream.get("broadcasting", False)
+    
     return {
         "top_streams": top_streams,
         "categories": categories,
@@ -1368,6 +1378,16 @@ async def get_recommended(request: Request):
         ]
         more = await db.users.aggregate(pipeline).to_list(10 - len(streamers))
         streamers.extend(more)
+    
+    # Attach active stream_id for live streamers
+    for s in streamers:
+        if s.get("is_streaming"):
+            stream = await db.streams.find_one(
+                {"user_id": s["user_id"], "is_live": True},
+                {"_id": 0, "stream_id": 1}
+            )
+            if stream:
+                s["active_stream_id"] = stream["stream_id"]
     
     return streamers
 

@@ -174,7 +174,7 @@ export default function Sidebar() {
               {recommended.slice(0, 10).map((s) => (
                 <Link
                   key={s.user_id}
-                  to={`/user/${s.username}`}
+                  to={s.active_stream_id ? `/stream/${s.active_stream_id}` : `/user/${s.username}`}
                   className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[#A0A0AB] hover:bg-white/5 hover:text-white transition-all duration-200"
                   data-testid={`rec-${s.user_id}`}
                 >
