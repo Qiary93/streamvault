@@ -5,6 +5,8 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import TagInput from '../components/TagInput';
+import RichTextEditor from '../components/RichTextEditor';
 import { toast } from 'sonner';
 import axios from 'axios';
 
@@ -30,7 +32,9 @@ export default function DashboardPage() {
     title: '',
     description: '',
     category_id: '',
-    thumbnail_url: ''
+    thumbnail_url: '',
+    tags: [],
+    quality: '720p'
   });
 
   useEffect(() => {
@@ -372,93 +376,107 @@ export default function DashboardPage() {
                 <Plus className="w-4 h-4 mr-2" /> Start Streaming
               </Button>
             </DialogTrigger>
-            <DialogContent className="bg-[#0F0F16] border-white/10">
+            <DialogContent className="bg-[#0F0F16] border-white/10 max-w-3xl w-full">
               <DialogHeader>
                 <DialogTitle className="text-white">Start a Stream</DialogTitle>
               </DialogHeader>
               <form onSubmit={handleCreateStream} className="space-y-4 pt-4">
-                <div>
-                  <label className="text-sm text-[#A0A0AB] block mb-1.5">Title *</label>
-                  <Input
-                    value={streamForm.title}
-                    onChange={(e) => setStreamForm(prev => ({ ...prev, title: e.target.value }))}
-                    placeholder="My awesome stream"
-                    className="bg-[#1A1A24] border-white/10 text-white"
-                    data-testid="stream-title-input"
-                  />
-                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Left Column */}
+                  <div className="space-y-4">
+                    <div>
+                      <label className="text-sm text-[#A0A0AB] block mb-1.5">Title *</label>
+                      <Input
+                        value={streamForm.title}
+                        onChange={(e) => setStreamForm(prev => ({ ...prev, title: e.target.value }))}
+                        placeholder="My awesome stream"
+                        className="bg-[#1A1A24] border-white/10 text-white"
+                        data-testid="stream-title-input"
+                      />
+                    </div>
 
-                <div>
-                  <label className="text-sm text-[#A0A0AB] block mb-1.5">Category *</label>
-                  <Select 
-                    value={streamForm.category_id}
-                    onValueChange={(value) => setStreamForm(prev => ({ ...prev, category_id: value }))}
-                  >
-                    <SelectTrigger className="bg-[#1A1A24] border-white/10 text-white" data-testid="stream-category-select">
-                      <SelectValue placeholder="Select a category" />
-                    </SelectTrigger>
-                    <SelectContent className="bg-[#0F0F16] border-white/10">
-                      {categories.map((cat) => (
-                        <SelectItem key={cat.category_id} value={cat.category_id} className="text-white">
-                          {cat.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div>
-                  <label className="text-sm text-[#A0A0AB] block mb-1.5">Description</label>
-                  <textarea
-                    value={streamForm.description}
-                    onChange={(e) => setStreamForm(prev => ({ ...prev, description: e.target.value }))}
-                    placeholder="What's your stream about?"
-                    rows={3}
-                    className="w-full p-3 bg-[#1A1A24] border border-white/10 rounded-md text-white placeholder-[#A0A0AB] focus:outline-none focus:border-[#00E5FF] resize-none"
-                    data-testid="stream-description-input"
-                  />
-                </div>
-
-                {/* Thumbnail Upload */}
-                <div>
-                  <label className="text-sm text-[#A0A0AB] block mb-1.5">Stream Thumbnail</label>
-                  <div className="space-y-3">
-                    {thumbnailPreview ? (
-                      <div className="relative aspect-video rounded-lg overflow-hidden bg-[#1A1A24] border border-white/10">
-                        <img src={thumbnailPreview} alt="Thumbnail preview" className="w-full h-full object-cover" />
-                        <button
-                          type="button"
-                          onClick={() => { setThumbnailFile(null); setThumbnailPreview(null); }}
-                          className="absolute top-2 right-2 p-1.5 bg-black/70 rounded-full text-white hover:bg-black/90 transition-colors"
-                          data-testid="remove-thumbnail-btn"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ) : (
-                      <label
-                        className="flex flex-col items-center justify-center w-full h-32 bg-[#1A1A24] border-2 border-dashed border-white/10 rounded-lg cursor-pointer hover:border-[#00E5FF]/50 transition-colors"
-                        data-testid="thumbnail-upload-area"
+                    <div>
+                      <label className="text-sm text-[#A0A0AB] block mb-1.5">Category *</label>
+                      <Select 
+                        value={streamForm.category_id}
+                        onValueChange={(value) => setStreamForm(prev => ({ ...prev, category_id: value }))}
                       >
-                        <Plus className="w-8 h-8 text-[#A0A0AB] mb-2" />
-                        <span className="text-sm text-[#A0A0AB]">Click to upload thumbnail</span>
-                        <span className="text-xs text-[#A0A0AB] mt-1">JPEG, PNG, WebP, GIF (max 5MB)</span>
-                        <input
-                          type="file"
-                          accept="image/jpeg,image/png,image/webp,image/gif"
-                          onChange={handleThumbnailSelect}
-                          className="hidden"
-                          data-testid="thumbnail-file-input"
-                        />
-                      </label>
-                    )}
+                        <SelectTrigger className="bg-[#1A1A24] border-white/10 text-white" data-testid="stream-category-select">
+                          <SelectValue placeholder="Select a category" />
+                        </SelectTrigger>
+                        <SelectContent className="bg-[#0F0F16] border-white/10">
+                          {categories.map((cat) => (
+                            <SelectItem key={cat.category_id} value={cat.category_id} className="text-white">
+                              {cat.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div>
+                      <label className="text-sm text-[#A0A0AB] block mb-1.5">Stream Quality</label>
+                      <Select
+                        value={streamForm.quality}
+                        onValueChange={(value) => setStreamForm(prev => ({ ...prev, quality: value }))}
+                      >
+                        <SelectTrigger className="bg-[#1A1A24] border-white/10 text-white" data-testid="stream-quality-select">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent className="bg-[#0F0F16] border-white/10">
+                          {["360p", "480p", "720p", "1080p", "1440p", "4K"].map((q) => (
+                            <SelectItem key={q} value={q} className="text-white">{q}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div>
+                      <label className="text-sm text-[#A0A0AB] block mb-1.5">Tags (max 5)</label>
+                      <TagInput
+                        tags={streamForm.tags}
+                        onChange={(tags) => setStreamForm(prev => ({ ...prev, tags }))}
+                        maxTags={5}
+                      />
+                    </div>
+
+                    {/* Thumbnail Upload */}
+                    <div>
+                      <label className="text-sm text-[#A0A0AB] block mb-1.5">Thumbnail</label>
+                      {thumbnailPreview ? (
+                        <div className="relative aspect-video rounded-lg overflow-hidden bg-[#1A1A24] border border-white/10">
+                          <img src={thumbnailPreview} alt="Preview" className="w-full h-full object-cover" />
+                          <button type="button" onClick={() => { setThumbnailFile(null); setThumbnailPreview(null); }} className="absolute top-2 right-2 p-1.5 bg-black/70 rounded-full text-white hover:bg-black/90" data-testid="remove-thumbnail-btn">
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ) : (
+                        <label className="flex flex-col items-center justify-center w-full h-28 bg-[#1A1A24] border-2 border-dashed border-white/10 rounded-lg cursor-pointer hover:border-[#00E5FF]/50 transition-colors" data-testid="thumbnail-upload-area">
+                          <Plus className="w-6 h-6 text-[#A0A0AB] mb-1" />
+                          <span className="text-xs text-[#A0A0AB]">Upload thumbnail (max 10MB)</span>
+                          <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={handleThumbnailSelect} className="hidden" data-testid="thumbnail-file-input" />
+                        </label>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Right Column */}
+                  <div className="space-y-4">
+                    <div>
+                      <label className="text-sm text-[#A0A0AB] block mb-1.5">Description (rich text)</label>
+                      <RichTextEditor
+                        value={streamForm.description}
+                        onChange={(html) => setStreamForm(prev => ({ ...prev, description: html }))}
+                        placeholder="Describe your stream... Use formatting tools above."
+                      />
+                    </div>
                   </div>
                 </div>
 
                 <Button 
                   type="submit"
                   disabled={uploadingThumb}
-                  className="w-full bg-[#00E5FF] text-black font-bold hover:bg-[#00B3CC] disabled:opacity-50"
+                  className="w-full bg-[#00E5FF] text-black font-bold hover:bg-[#00B3CC] disabled:opacity-50 mt-4"
                   data-testid="create-stream-submit-btn"
                 >
                   {uploadingThumb ? 'Uploading thumbnail...' : 'Go Live'}

@@ -5,6 +5,7 @@ import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Button } from './ui/button';
 import { ScrollArea } from './ui/scroll-area';
 import ModControls from './ModControls';
+import ChatEmojiPicker from './ChatEmojiPicker';
 import axios from 'axios';
 
 const API = process.env.REACT_APP_BACKEND_URL;
@@ -229,16 +230,17 @@ export default function ChatBox({ streamId }) {
       </ScrollArea>
 
       {/* Input */}
-      <div className="p-4 border-t border-white/5">
+      <div className="p-3 border-t border-white/5">
         {user ? (
-          <form onSubmit={handleSendMessage} className="flex gap-2">
+          <form onSubmit={handleSendMessage} className="flex items-center gap-1.5">
+            <ChatEmojiPicker onSelect={(emoji) => setNewMessage(prev => prev + emoji)} />
             <input
               type="text"
               placeholder="Send a message..."
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
               maxLength={500}
-              className="flex-1 h-10 px-4 bg-[#1A1A24] border border-white/10 rounded-lg text-white placeholder-[#A0A0AB] focus:outline-none focus:border-[#00E5FF] transition-colors"
+              className="flex-1 h-10 px-3 bg-[#1A1A24] border border-white/10 rounded-lg text-white placeholder-[#A0A0AB] focus:outline-none focus:border-[#00E5FF] transition-colors text-sm"
               data-testid="chat-input"
             />
             <Button 

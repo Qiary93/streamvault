@@ -180,6 +180,8 @@ class StreamCreate(BaseModel):
     description: Optional[str] = None
     category_id: str
     thumbnail_url: Optional[str] = None
+    tags: Optional[List[str]] = None
+    quality: Optional[str] = "720p"
 
 class StreamUpdate(BaseModel):
     title: Optional[str] = None
@@ -187,6 +189,8 @@ class StreamUpdate(BaseModel):
     category_id: Optional[str] = None
     thumbnail_url: Optional[str] = None
     is_live: Optional[bool] = None
+    tags: Optional[List[str]] = None
+    quality: Optional[str] = None
 
 class StreamResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -770,6 +774,15 @@ async def create_stream(stream_data: StreamCreate, user: dict = Depends(get_curr
             whip_token = token.to_jwt()
             whip_url = LIVEKIT_URL.replace("wss://", "https://") + "/rtc/whip"
     
+    # Validate tags (max 5, sanitize)
+    tags = []
+    if stream_data.tags:
+        tags = [t.strip()[:30] for t in stream_data.tags[:5] if t.strip()]
+    
+    quality = stream_data.quality or "720p"
+    if quality not in ["360p", "480p", "720p", "1080p", "1440p", "4K"]:
+        quality = "720p"
+    
     stream_doc = {
         "stream_id": stream_id,
         "user_id": user["user_id"],
@@ -777,6 +790,8 @@ async def create_stream(stream_data: StreamCreate, user: dict = Depends(get_curr
         "description": stream_data.description,
         "category_id": stream_data.category_id,
         "thumbnail_url": stream_data.thumbnail_url,
+        "tags": tags,
+        "quality": quality,
         "viewer_count": 0,
         "is_live": True,
         "broadcasting": False,
@@ -1195,46 +1210,69 @@ async def get_featured():
         "recommended_streamers": recommended_users
     }
 
-# ============= THUMBNAIL UPLOAD =============
+# ============= FILE UPLOADS (THUMBNAILS, AVATARS, COVERS) =============
 
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
-MAX_THUMBNAIL_SIZE = 5 * 1024 * 1024  # 5MB
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
+async def upload_file(file: UploadFile, user_id: str, file_type: str):
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(status_code=400, detail="Only JPEG, PNG, WebP, and GIF images are allowed")
+    data = await file.read()
+    if len(data) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File size exceeds 10MB limit")
+    ext = file.filename.split(".")[-1] if "." in file.filename else "png"
+    path = f"{APP_NAME}/{file_type}/{user_id}/{uuid.uuid4().hex}.{ext}"
+    result = put_object(path, data, file.content_type or "image/png")
+    await db.files.insert_one({
+        "file_id": f"file_{uuid.uuid4().hex[:12]}",
+        "storage_path": result["path"],
+        "original_filename": file.filename,
+        "content_type": file.content_type,
+        "size": result.get("size", len(data)),
+        "user_id": user_id,
+        "type": file_type,
+        "is_deleted": False,
+        "created_at": datetime.now(timezone.utc)
+    })
+    return result["path"]
 
 @api_router.post("/upload/thumbnail")
 async def upload_thumbnail(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
-    if file.content_type not in ALLOWED_IMAGE_TYPES:
-        raise HTTPException(status_code=400, detail="Only JPEG, PNG, WebP, and GIF images are allowed")
-    
-    data = await file.read()
-    if len(data) > MAX_THUMBNAIL_SIZE:
-        raise HTTPException(status_code=400, detail="File size exceeds 5MB limit")
-    
-    ext = file.filename.split(".")[-1] if "." in file.filename else "png"
-    path = f"{APP_NAME}/thumbnails/{user['user_id']}/{uuid.uuid4().hex}.{ext}"
-    
     try:
-        result = put_object(path, data, file.content_type or "image/png")
-        
-        await db.files.insert_one({
-            "file_id": f"file_{uuid.uuid4().hex[:12]}",
-            "storage_path": result["path"],
-            "original_filename": file.filename,
-            "content_type": file.content_type,
-            "size": result.get("size", len(data)),
-            "user_id": user["user_id"],
-            "type": "thumbnail",
-            "is_deleted": False,
-            "created_at": datetime.now(timezone.utc)
-        })
-        
-        # Return the serve URL
-        return {
-            "path": result["path"],
-            "url": f"/api/files/{result['path']}"
-        }
+        path = await upload_file(file, user["user_id"], "thumbnails")
+        return {"path": path, "url": f"/api/files/{path}"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Thumbnail upload error: {e}")
         raise HTTPException(status_code=500, detail="Failed to upload thumbnail")
+
+@api_router.post("/upload/avatar")
+async def upload_avatar(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    try:
+        path = await upload_file(file, user["user_id"], "avatars")
+        avatar_url = f"/api/files/{path}"
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"avatar_url": avatar_url}})
+        return {"path": path, "url": avatar_url}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Avatar upload error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload avatar")
+
+@api_router.post("/upload/cover")
+async def upload_cover(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    try:
+        path = await upload_file(file, user["user_id"], "covers")
+        cover_url = f"/api/files/{path}"
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"cover_url": cover_url}})
+        return {"path": path, "url": cover_url}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Cover upload error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload cover")
 
 @api_router.get("/files/{path:path}")
 async def serve_file(path: str):
@@ -1252,6 +1290,80 @@ async def serve_file(path: str):
     except Exception as e:
         logger.error(f"File serve error: {e}")
         raise HTTPException(status_code=404, detail="File not found")
+
+# ============= RECOMMENDED STREAMERS =============
+
+@api_router.get("/recommended")
+async def get_recommended(request: Request):
+    """Get 10 recommended streamers based on user interests or random."""
+    current_user = await get_optional_user(request)
+    
+    streamers = []
+    
+    if current_user:
+        # Get categories the user follows/watches
+        follows = await db.follows.find({"follower_id": current_user["user_id"]}, {"_id": 0, "following_id": 1}).to_list(100)
+        following_ids = [f["following_id"] for f in follows]
+        
+        # Get streamers the user doesn't follow yet, preferring active ones
+        pipeline = [
+            {"$match": {
+                "user_id": {"$nin": following_ids + [current_user["user_id"]]},
+                "role": {"$ne": "admin"}
+            }},
+            {"$sample": {"size": 10}},
+            {"$project": {"_id": 0, "password_hash": 0, "stream_key": 0}}
+        ]
+        streamers = await db.users.aggregate(pipeline).to_list(10)
+    
+    if len(streamers) < 10:
+        # Fill with random streamers
+        existing_ids = [s["user_id"] for s in streamers]
+        if current_user:
+            existing_ids.append(current_user["user_id"])
+        
+        pipeline = [
+            {"$match": {"user_id": {"$nin": existing_ids}, "role": {"$ne": "admin"}}},
+            {"$sample": {"size": 10 - len(streamers)}},
+            {"$project": {"_id": 0, "password_hash": 0, "stream_key": 0}}
+        ]
+        more = await db.users.aggregate(pipeline).to_list(10 - len(streamers))
+        streamers.extend(more)
+    
+    return streamers
+
+# ============= EMOTES =============
+
+PLATFORM_EMOTES = [
+    {"code": ":vault:", "name": "Vault", "url": "https://api.iconify.design/twemoji:star-struck.svg"},
+    {"code": ":fire:", "name": "Fire", "url": "https://api.iconify.design/twemoji:fire.svg"},
+    {"code": ":heart:", "name": "Heart", "url": "https://api.iconify.design/twemoji:red-heart.svg"},
+    {"code": ":gg:", "name": "GG", "url": "https://api.iconify.design/twemoji:trophy.svg"},
+    {"code": ":pog:", "name": "Pog", "url": "https://api.iconify.design/twemoji:face-with-open-mouth.svg"},
+    {"code": ":lol:", "name": "LOL", "url": "https://api.iconify.design/twemoji:face-with-tears-of-joy.svg"},
+    {"code": ":cry:", "name": "Cry", "url": "https://api.iconify.design/twemoji:loudly-crying-face.svg"},
+    {"code": ":rage:", "name": "Rage", "url": "https://api.iconify.design/twemoji:angry-face.svg"},
+    {"code": ":cool:", "name": "Cool", "url": "https://api.iconify.design/twemoji:smiling-face-with-sunglasses.svg"},
+    {"code": ":wave:", "name": "Wave", "url": "https://api.iconify.design/twemoji:waving-hand.svg"},
+    {"code": ":clap:", "name": "Clap", "url": "https://api.iconify.design/twemoji:clapping-hands.svg"},
+    {"code": ":hype:", "name": "Hype", "url": "https://api.iconify.design/twemoji:rocket.svg"},
+    {"code": ":love:", "name": "Love", "url": "https://api.iconify.design/twemoji:smiling-face-with-heart-eyes.svg"},
+    {"code": ":think:", "name": "Think", "url": "https://api.iconify.design/twemoji:thinking-face.svg"},
+    {"code": ":skull:", "name": "Skull", "url": "https://api.iconify.design/twemoji:skull.svg"},
+    {"code": ":crown:", "name": "Crown", "url": "https://api.iconify.design/twemoji:crown.svg"},
+]
+
+@api_router.get("/emotes")
+async def get_emotes():
+    return PLATFORM_EMOTES
+
+# ============= STREAM QUALITY OPTIONS =============
+
+QUALITY_OPTIONS = ["360p", "480p", "720p", "1080p", "1440p", "4K"]
+
+@api_router.get("/quality-options")
+async def get_quality_options():
+    return QUALITY_OPTIONS
 
 # ============= SEED DATA =============
 

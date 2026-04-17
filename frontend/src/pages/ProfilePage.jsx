@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Users, Heart, HeartBreak, Broadcast, CalendarBlank } from '@phosphor-icons/react';
+import { Users, Heart, HeartBreak, Broadcast, CalendarBlank, Camera } from '@phosphor-icons/react';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Button } from '../components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
@@ -88,20 +88,75 @@ export default function ProfilePage() {
 
   const isOwnProfile = currentUser?.user_id === profile.user_id;
 
+  const handleAvatarUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) { toast.error('Max 10MB'); return; }
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await axios.post(`${API}/api/upload/avatar`, formData, {
+        withCredentials: true, headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      setProfile(prev => ({ ...prev, avatar_url: `${API}${res.data.url}` }));
+      toast.success('Avatar updated!');
+    } catch (err) {
+      toast.error('Failed to upload avatar');
+    }
+  };
+
+  const handleCoverUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) { toast.error('Max 10MB'); return; }
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await axios.post(`${API}/api/upload/cover`, formData, {
+        withCredentials: true, headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      setProfile(prev => ({ ...prev, cover_url: `${API}${res.data.url}` }));
+      toast.success('Cover photo updated!');
+    } catch (err) {
+      toast.error('Failed to upload cover photo');
+    }
+  };
+
   return (
     <div data-testid="profile-page">
-      {/* Header Banner */}
-      <div className="h-32 lg:h-48 bg-gradient-to-r from-[#0F0F16] via-[#00E5FF]/20 to-[#0F0F16]" />
+      {/* Header Banner / Cover Photo */}
+      <div className="h-32 lg:h-48 relative overflow-hidden">
+        {profile.cover_url ? (
+          <img src={profile.cover_url} alt="Cover" className="w-full h-full object-cover" />
+        ) : (
+          <div className="w-full h-full bg-gradient-to-r from-[#0F0F16] via-[#00E5FF]/20 to-[#0F0F16]" />
+        )}
+        {isOwnProfile && (
+          <label className="absolute bottom-3 right-3 flex items-center gap-2 px-3 py-1.5 bg-black/60 hover:bg-black/80 text-white text-xs font-medium rounded-lg cursor-pointer transition-colors" data-testid="upload-cover-btn">
+            <Camera className="w-4 h-4" /> Change Cover
+            <input type="file" accept="image/jpeg,image/png,image/webp" onChange={handleCoverUpload} className="hidden" />
+          </label>
+        )}
+      </div>
 
       {/* Profile Info */}
       <div className="px-4 lg:px-6 -mt-12 lg:-mt-16 mb-6">
         <div className="flex flex-col lg:flex-row lg:items-end gap-4">
-          <Avatar className={`w-24 h-24 lg:w-32 lg:h-32 border-4 border-[#05050A] ${profile.is_streaming ? 'avatar-live' : ''}`}>
-            <AvatarImage src={profile.avatar_url} alt={profile.display_name || profile.username} />
-            <AvatarFallback className="bg-[#292938] text-[#00E5FF] text-3xl">
-              {(profile.display_name || profile.username)?.charAt(0).toUpperCase()}
-            </AvatarFallback>
-          </Avatar>
+          {/* Avatar with upload */}
+          <div className="relative group">
+            <Avatar className={`w-24 h-24 lg:w-32 lg:h-32 border-4 border-[#05050A] ${profile.is_streaming ? 'avatar-live' : ''}`}>
+              <AvatarImage src={profile.avatar_url} alt={profile.display_name || profile.username} />
+              <AvatarFallback className="bg-[#292938] text-[#00E5FF] text-3xl">
+                {(profile.display_name || profile.username)?.charAt(0).toUpperCase()}
+              </AvatarFallback>
+            </Avatar>
+            {isOwnProfile && (
+              <label className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-full opacity-0 group-hover:opacity-100 cursor-pointer transition-opacity" data-testid="upload-avatar-btn">
+                <Camera className="w-6 h-6 text-white" />
+                <input type="file" accept="image/jpeg,image/png,image/webp" onChange={handleAvatarUpload} className="hidden" />
+              </label>
+            )}
+          </div>
 
           <div className="flex-1">
             <div className="flex items-start justify-between">

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Eye, Users, Heart, HeartBreak, CurrencyDollar, Share, Star } from '@phosphor-icons/react';
+import { Eye, Users, Heart, HeartBreak, CurrencyDollar, Share, Star, SpeakerHigh, SpeakerLow, SpeakerX, CornersOut, Gear } from '@phosphor-icons/react';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Button } from '../components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
@@ -40,6 +40,11 @@ export default function StreamPage() {
   const [selectedTier, setSelectedTier] = useState(null);
   const [donationMessage, setDonationMessage] = useState('');
   const [isSubscribed, setIsSubscribed] = useState(false);
+  const [volume, setVolume] = useState(80);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [selectedQuality, setSelectedQuality] = useState('Auto');
+  const [showQualityMenu, setShowQualityMenu] = useState(false);
 
   useEffect(() => {
     const fetchStream = async () => {
@@ -171,10 +176,10 @@ export default function StreamPage() {
       {/* Main Content */}
       <div className="lg:col-span-9 flex flex-col overflow-y-auto">
         {/* Video Player - LiveKit */}
-        <div className="relative aspect-video bg-black" data-testid="video-player">
+        <div className="relative aspect-video bg-black group" data-testid="video-player" id="stream-player-container">
           {stream.is_live ? (
             <LiveKitViewer 
-              roomName={`stream_${stream.stream_id}`} 
+              roomName={stream.room_name || `stream_${stream.stream_id}`} 
               streamThumbnail={stream.thumbnail_url} 
             />
           ) : stream.thumbnail_url ? (
@@ -197,10 +202,84 @@ export default function StreamPage() {
             </div>
           )}
 
-          {/* Viewer count */}
-          <div className="absolute bottom-4 left-4 flex items-center gap-2 px-3 py-1.5 bg-black/70 rounded text-sm text-white">
-            <Eye className="w-4 h-4" />
-            {stream.viewer_count?.toLocaleString() || 0} viewers
+          {/* Player Controls Overlay */}
+          <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 p-4">
+            <div className="flex items-center justify-between">
+              {/* Left: Viewers */}
+              <div className="flex items-center gap-3">
+                <span className="flex items-center gap-1.5 text-sm text-white">
+                  <Eye className="w-4 h-4" />
+                  {stream.viewer_count?.toLocaleString() || 0}
+                </span>
+              </div>
+
+              {/* Right: Volume, Quality, Fullscreen */}
+              <div className="flex items-center gap-2">
+                {/* Volume */}
+                <div className="flex items-center gap-1.5 group/vol">
+                  <button
+                    onClick={() => setIsMuted(!isMuted)}
+                    className="p-1.5 rounded hover:bg-white/20 text-white transition-colors"
+                    data-testid="volume-toggle-btn"
+                  >
+                    {isMuted || volume === 0 ? <SpeakerX className="w-5 h-5" /> : volume < 50 ? <SpeakerLow className="w-5 h-5" /> : <SpeakerHigh className="w-5 h-5" />}
+                  </button>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={isMuted ? 0 : volume}
+                    onChange={(e) => { setVolume(parseInt(e.target.value)); setIsMuted(false); }}
+                    className="w-20 h-1 accent-[#00E5FF] cursor-pointer"
+                    data-testid="volume-slider"
+                  />
+                </div>
+
+                {/* Quality */}
+                <div className="relative">
+                  <button
+                    onClick={() => setShowQualityMenu(!showQualityMenu)}
+                    className="p-1.5 rounded hover:bg-white/20 text-white transition-colors flex items-center gap-1"
+                    data-testid="quality-menu-btn"
+                  >
+                    <Gear className="w-5 h-5" />
+                    <span className="text-xs">{selectedQuality}</span>
+                  </button>
+                  {showQualityMenu && (
+                    <div className="absolute bottom-full right-0 mb-2 bg-[#0F0F16] border border-white/10 rounded-lg overflow-hidden shadow-xl z-10">
+                      {['Auto', ...(stream.quality ? [stream.quality] : []), '1080p', '720p', '480p', '360p'].filter((v, i, a) => a.indexOf(v) === i).map((q) => (
+                        <button
+                          key={q}
+                          onClick={() => { setSelectedQuality(q); setShowQualityMenu(false); }}
+                          className={`block w-full px-4 py-2 text-left text-sm hover:bg-white/10 transition-colors ${selectedQuality === q ? 'text-[#00E5FF]' : 'text-white'}`}
+                          data-testid={`quality-${q}`}
+                        >
+                          {q} {selectedQuality === q && '✓'}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Fullscreen */}
+                <button
+                  onClick={() => {
+                    const el = document.getElementById('stream-player-container');
+                    if (document.fullscreenElement) {
+                      document.exitFullscreen();
+                      setIsFullscreen(false);
+                    } else if (el) {
+                      el.requestFullscreen();
+                      setIsFullscreen(true);
+                    }
+                  }}
+                  className="p-1.5 rounded hover:bg-white/20 text-white transition-colors"
+                  data-testid="fullscreen-btn"
+                >
+                  <CornersOut className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -371,10 +450,24 @@ export default function StreamPage() {
             </div>
           </div>
 
-          {/* Description */}
+          {/* Tags */}
+          {stream.tags && stream.tags.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {stream.tags.map((tag, i) => (
+                <span key={i} className="px-2.5 py-1 bg-[#00E5FF]/10 text-[#00E5FF] text-xs font-medium rounded-full">
+                  #{tag}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Description (rendered as HTML) */}
           {stream.description && (
             <div className="mt-4 p-4 bg-[#0F0F16] rounded-lg">
-              <p className="text-[#A0A0AB] text-sm whitespace-pre-wrap">{stream.description}</p>
+              <div 
+                className="text-[#A0A0AB] text-sm prose prose-invert prose-sm max-w-none [&_a]:text-[#00E5FF] [&_a]:underline [&_img]:max-w-full [&_img]:rounded [&_b]:text-white [&_strong]:text-white [&_i]:italic"
+                dangerouslySetInnerHTML={{ __html: stream.description }}
+              />
             </div>
           )}
         </div>
