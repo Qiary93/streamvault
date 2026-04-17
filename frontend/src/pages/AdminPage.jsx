@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Navigate } from 'react-router-dom';
-import { Database, Shield, Check, Trash, Eye, EyeSlash, Globe, Upload } from '@phosphor-icons/react';
+import { Database, Shield, Check, Trash, Eye, EyeSlash, Globe, Upload, CurrencyDollar, Clock, X as XIcon, Bank } from '@phosphor-icons/react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
@@ -24,6 +24,142 @@ const WASABI_REGIONS = [
   { value: 'ap-southeast-1', label: 'AP Southeast 1 (Singapore)' },
   { value: 'ap-southeast-2', label: 'AP Southeast 2 (Sydney)' },
 ];
+
+
+function WithdrawRequests() {
+  const [requests, setRequests] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchRequests();
+  }, []);
+
+  const fetchRequests = async () => {
+    try {
+      const res = await axios.get(`${API}/api/admin/withdrawals`, { withCredentials: true });
+      setRequests(res.data);
+    } catch (e) {
+      console.error('Error fetching withdrawals:', e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleApprove = async (id) => {
+    if (!window.confirm('Approve this withdrawal? Funds will need to be sent manually to the streamer.')) return;
+    try {
+      await axios.put(`${API}/api/admin/withdrawals/${id}/approve`, {}, { withCredentials: true });
+      toast.success('Withdrawal approved');
+      fetchRequests();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to approve');
+    }
+  };
+
+  const handleReject = async (id) => {
+    const reason = prompt('Rejection reason (optional):') || 'Request rejected by admin';
+    try {
+      await axios.put(`${API}/api/admin/withdrawals/${id}/reject`, { reason }, { withCredentials: true, headers: { 'Content-Type': 'application/json' } });
+      toast.success('Withdrawal rejected');
+      fetchRequests();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to reject');
+    }
+  };
+
+  if (loading) return null;
+
+  const pending = requests.filter(r => r.status === 'pending');
+  const processed = requests.filter(r => r.status !== 'pending');
+
+  return (
+    <div className="bg-[#0F0F16] border border-white/5 rounded-xl p-6 mt-6" data-testid="withdraw-requests-section">
+      <div className="flex items-center gap-3 mb-6">
+        <Bank className="w-6 h-6 text-green-400" />
+        <div>
+          <h2 className="text-lg font-semibold text-white">Withdraw Requests</h2>
+          <p className="text-sm text-[#A0A0AB]">{pending.length} pending request{pending.length !== 1 ? 's' : ''}</p>
+        </div>
+      </div>
+
+      {pending.length > 0 && (
+        <div className="mb-6">
+          <h3 className="text-sm font-bold text-yellow-400 uppercase tracking-wider mb-3">Pending</h3>
+          <div className="space-y-3">
+            {pending.map((wd) => (
+              <div key={wd.withdrawal_id} className="p-4 bg-[#1A1A24] border border-yellow-500/20 rounded-lg">
+                <div className="flex items-start justify-between mb-3">
+                  <div>
+                    <p className="text-white font-semibold">{wd.first_name} {wd.last_name}</p>
+                    <p className="text-sm text-[#A0A0AB]">@{wd.username} - {wd.display_name}</p>
+                  </div>
+                  <span className="text-xl font-bold text-green-400">${wd.amount?.toFixed(2)}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-3 text-sm mb-3">
+                  <div>
+                    <p className="text-xs text-[#A0A0AB]">IBAN</p>
+                    <p className="text-white font-mono text-xs">{wd.iban}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-[#A0A0AB]">PayPal</p>
+                    <p className="text-white text-xs">{wd.paypal_email || 'Not provided'}</p>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-[#A0A0AB]">{new Date(wd.created_at).toLocaleString()}</p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleReject(wd.withdrawal_id)}
+                      className="px-4 py-1.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-lg text-sm font-medium hover:bg-red-500/20 transition-colors"
+                      data-testid={`reject-${wd.withdrawal_id}`}
+                    >
+                      Reject
+                    </button>
+                    <button
+                      onClick={() => handleApprove(wd.withdrawal_id)}
+                      className="px-4 py-1.5 bg-green-500 text-white rounded-lg text-sm font-bold hover:bg-green-600 transition-colors"
+                      data-testid={`approve-${wd.withdrawal_id}`}
+                    >
+                      Approve
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {processed.length > 0 && (
+        <div>
+          <h3 className="text-sm font-bold text-[#A0A0AB] uppercase tracking-wider mb-3">History</h3>
+          <div className="space-y-2 max-h-60 overflow-y-auto">
+            {processed.map((wd) => (
+              <div key={wd.withdrawal_id} className="flex items-center justify-between p-3 bg-[#1A1A24] rounded-lg">
+                <div className="flex items-center gap-3">
+                  <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${wd.status === 'completed' ? 'text-green-400 bg-green-500/10' : 'text-red-400 bg-red-500/10'}`}>
+                    {wd.status === 'completed' ? <Check className="w-3 h-3" /> : <XIcon className="w-3 h-3" />}
+                    {wd.status}
+                  </span>
+                  <div>
+                    <p className="text-sm text-white">{wd.first_name} {wd.last_name} - ${wd.amount?.toFixed(2)}</p>
+                    <p className="text-xs text-[#A0A0AB]">@{wd.username}</p>
+                  </div>
+                </div>
+                <p className="text-xs text-[#A0A0AB]">{new Date(wd.created_at).toLocaleDateString()}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {requests.length === 0 && (
+        <p className="text-center text-[#A0A0AB] py-8">No withdrawal requests yet</p>
+      )}
+    </div>
+  );
+}
+
 
 export default function AdminPage() {
   const { user } = useAuth();
@@ -356,6 +492,9 @@ export default function AdminPage() {
           </ol>
         </div>
       </div>
+
+      {/* Withdraw Requests */}
+      <WithdrawRequests />
     </div>
   );
 }

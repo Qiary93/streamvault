@@ -2339,6 +2339,202 @@ async def update_bio(request: Request, user: dict = Depends(get_current_user)):
 
 # ============= CUSTOM DONATION =============
 
+# ============= REVENUE & WITHDRAWALS =============
+
+@api_router.get("/my/revenue")
+async def get_my_revenue(user: dict = Depends(get_current_user)):
+    """Get streamer's revenue summary."""
+    donations = await db.donations.find({"streamer_id": user["user_id"]}, {"_id": 0, "amount": 1}).to_list(10000)
+    subs = await db.subscriptions.find({"streamer_id": user["user_id"]}, {"_id": 0, "amount": 1}).to_list(10000)
+    
+    total_donations = sum(d.get("amount", 0) for d in donations)
+    total_subs = sum(s.get("amount", 0) for s in subs)
+    total_earned = total_donations + total_subs
+    
+    # Get total withdrawn (completed)
+    withdrawals = await db.withdrawals.find(
+        {"user_id": user["user_id"], "status": "completed"}, {"_id": 0, "amount": 1}
+    ).to_list(10000)
+    total_withdrawn = sum(w.get("amount", 0) for w in withdrawals)
+    
+    # Pending withdrawals
+    pending = await db.withdrawals.find(
+        {"user_id": user["user_id"], "status": "pending"}, {"_id": 0, "amount": 1}
+    ).to_list(100)
+    total_pending = sum(w.get("amount", 0) for w in pending)
+    
+    available = round(total_earned - total_withdrawn - total_pending, 2)
+    
+    return {
+        "total_donations": round(total_donations, 2),
+        "total_subscriptions": round(total_subs, 2),
+        "total_earned": round(total_earned, 2),
+        "total_withdrawn": round(total_withdrawn, 2),
+        "total_pending": round(total_pending, 2),
+        "available_balance": max(available, 0)
+    }
+
+@api_router.post("/my/withdraw")
+async def request_withdrawal(request: Request, user: dict = Depends(get_current_user)):
+    body = await request.json()
+    
+    first_name = str(body.get("first_name", "")).strip()
+    last_name = str(body.get("last_name", "")).strip()
+    amount = float(body.get("amount", 0))
+    iban = str(body.get("iban", "")).strip()
+    paypal_email = str(body.get("paypal_email", "")).strip()
+    
+    if not first_name or not last_name:
+        raise HTTPException(status_code=400, detail="First and last name required")
+    if amount < 50:
+        raise HTTPException(status_code=400, detail="Minimum withdrawal is $50")
+    if not iban:
+        raise HTTPException(status_code=400, detail="IBAN is required")
+    
+    # Check available balance
+    revenue = await get_my_revenue.__wrapped__(request, user) if hasattr(get_my_revenue, '__wrapped__') else None
+    if not revenue:
+        # Manually calculate
+        donations = await db.donations.find({"streamer_id": user["user_id"]}, {"_id": 0, "amount": 1}).to_list(10000)
+        subs = await db.subscriptions.find({"streamer_id": user["user_id"]}, {"_id": 0, "amount": 1}).to_list(10000)
+        total_earned = sum(d.get("amount", 0) for d in donations) + sum(s.get("amount", 0) for s in subs)
+        withdrawn = await db.withdrawals.find({"user_id": user["user_id"], "status": {"$in": ["completed", "pending"]}}, {"_id": 0, "amount": 1}).to_list(10000)
+        total_used = sum(w.get("amount", 0) for w in withdrawn)
+        available = round(total_earned - total_used, 2)
+    else:
+        available = revenue["available_balance"]
+    
+    if amount > available:
+        raise HTTPException(status_code=400, detail=f"Insufficient balance. Available: ${available:.2f}")
+    
+    withdrawal_id = f"wd_{uuid.uuid4().hex[:12]}"
+    
+    await db.withdrawals.insert_one({
+        "withdrawal_id": withdrawal_id,
+        "user_id": user["user_id"],
+        "username": user["username"],
+        "display_name": user.get("display_name"),
+        "first_name": first_name,
+        "last_name": last_name,
+        "amount": round(amount, 2),
+        "iban": iban,
+        "paypal_email": paypal_email or None,
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc)
+    })
+    
+    # Notify admin
+    admins = await db.users.find({"role": "admin"}, {"_id": 0, "user_id": 1}).to_list(20)
+    for admin in admins:
+        await db.notifications.insert_one({
+            "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+            "user_id": admin["user_id"],
+            "type": "withdrawal",
+            "message": f"New withdrawal request: ${amount:.2f} from {user.get('display_name') or user['username']}",
+            "data": {"withdrawal_id": withdrawal_id},
+            "read": False,
+            "created_at": datetime.now(timezone.utc)
+        })
+    
+    return {"message": "Withdrawal request submitted", "withdrawal_id": withdrawal_id}
+
+@api_router.get("/my/withdrawals")
+async def get_my_withdrawals(user: dict = Depends(get_current_user)):
+    withdrawals = await db.withdrawals.find(
+        {"user_id": user["user_id"]}, {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    return withdrawals
+
+# ============= ADMIN WITHDRAWAL MANAGEMENT =============
+
+@api_router.get("/admin/withdrawals")
+async def get_withdrawal_requests(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    withdrawals = await db.withdrawals.find({}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return withdrawals
+
+@api_router.put("/admin/withdrawals/{withdrawal_id}/approve")
+async def approve_withdrawal(withdrawal_id: str, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    wd = await db.withdrawals.find_one({"withdrawal_id": withdrawal_id})
+    if not wd:
+        raise HTTPException(status_code=404, detail="Withdrawal not found")
+    if wd["status"] != "pending":
+        raise HTTPException(status_code=400, detail=f"Withdrawal is already {wd['status']}")
+    
+    # Process Stripe payout
+    try:
+        api_key = os.environ.get("STRIPE_API_KEY")
+        # Note: Actual Stripe payouts require connected accounts or manual transfers
+        # For now, mark as completed and admin handles the actual transfer
+        
+        await db.withdrawals.update_one(
+            {"withdrawal_id": withdrawal_id},
+            {"$set": {
+                "status": "completed",
+                "approved_by": user["user_id"],
+                "approved_at": datetime.now(timezone.utc)
+            }}
+        )
+        
+        # Notify streamer
+        await db.notifications.insert_one({
+            "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+            "user_id": wd["user_id"],
+            "type": "withdrawal",
+            "message": f"Your withdrawal of ${wd['amount']:.2f} has been approved!",
+            "data": {"withdrawal_id": withdrawal_id},
+            "read": False,
+            "created_at": datetime.now(timezone.utc)
+        })
+        
+        return {"message": "Withdrawal approved", "withdrawal_id": withdrawal_id}
+    
+    except Exception as e:
+        logger.error(f"Withdrawal approval error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process withdrawal")
+
+@api_router.put("/admin/withdrawals/{withdrawal_id}/reject")
+async def reject_withdrawal(withdrawal_id: str, request: Request, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    body = await request.json() if request.headers.get("content-type") == "application/json" else {}
+    reason = body.get("reason", "Request rejected by admin")
+    
+    wd = await db.withdrawals.find_one({"withdrawal_id": withdrawal_id})
+    if not wd:
+        raise HTTPException(status_code=404, detail="Withdrawal not found")
+    if wd["status"] != "pending":
+        raise HTTPException(status_code=400, detail=f"Withdrawal is already {wd['status']}")
+    
+    await db.withdrawals.update_one(
+        {"withdrawal_id": withdrawal_id},
+        {"$set": {
+            "status": "rejected",
+            "rejected_by": user["user_id"],
+            "rejected_at": datetime.now(timezone.utc),
+            "reject_reason": reason
+        }}
+    )
+    
+    # Notify streamer
+    await db.notifications.insert_one({
+        "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+        "user_id": wd["user_id"],
+        "type": "withdrawal",
+        "message": f"Your withdrawal of ${wd['amount']:.2f} was rejected: {reason}",
+        "data": {"withdrawal_id": withdrawal_id},
+        "read": False,
+        "created_at": datetime.now(timezone.utc)
+    })
+    
+    return {"message": "Withdrawal rejected"}
+
 # ============= LIVEKIT EGRESS (RECORDING) =============
 
 @api_router.post("/streams/{stream_id}/record/start")
