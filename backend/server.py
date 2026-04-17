@@ -881,28 +881,55 @@ async def check_broadcast_status(stream_id: str):
     
     try:
         from livekit.protocol.ingress import ListIngressRequest
+        from livekit.protocol.room import ListParticipantsRequest
+        
+        now_broadcasting = False
+        status = 0
+        
         async with LiveKitAPI(
             url=LIVEKIT_URL,
             api_key=LIVEKIT_API_KEY,
             api_secret=LIVEKIT_API_SECRET
         ) as lkapi:
-            result = await lkapi.ingress.list_ingress(ListIngressRequest(ingress_id=ingress_id))
+            # Method 1: Check ingress status
+            try:
+                result = await lkapi.ingress.list_ingress(ListIngressRequest(ingress_id=ingress_id))
+                ingress_list = result.items if hasattr(result, 'items') else []
+                
+                if len(ingress_list) > 0:
+                    ingress = ingress_list[0]
+                    status = ingress.state.status if ingress.state else 0
+                    if status >= 1:
+                        now_broadcasting = True
+            except Exception as ie:
+                logger.warning(f"Ingress check failed: {ie}")
             
-            if result and len(result) > 0:
-                ingress = result[0]
-                # Status 0=STANDBY, 1=BUFFERING, 2=ENDPOINT_PUBLISHING
-                status = ingress.state.status if ingress.state else 0
-                now_broadcasting = status >= 1  # BUFFERING or PUBLISHING means OBS connected
-                
-                if now_broadcasting != is_broadcasting:
-                    await db.streams.update_one(
-                        {"stream_id": stream_id},
-                        {"$set": {"broadcasting": now_broadcasting}}
-                    )
-                    if now_broadcasting:
-                        logger.info(f"Stream {stream_id} is now broadcasting")
-                
-                return {"broadcasting": now_broadcasting, "ingress_status": status}
+            # Method 2: Check room participants (fallback)
+            if not now_broadcasting:
+                room_name = stream.get("room_name", f"stream_{stream_id}")
+                try:
+                    participants = await lkapi.room.list_participants(ListParticipantsRequest(room=room_name))
+                    p_list = participants.participants if hasattr(participants, 'participants') else []
+                    # If any participant is publishing, they're broadcasting
+                    for p in p_list:
+                        if p.tracks and len(p.tracks) > 0:
+                            now_broadcasting = True
+                            status = 2
+                            break
+                except Exception as pe:
+                    logger.debug(f"Room participants check: {pe}")
+        
+        logger.info(f"Broadcast check for {stream_id}: ingress_status={status}, broadcasting={now_broadcasting}")
+        
+        if now_broadcasting != is_broadcasting:
+            await db.streams.update_one(
+                {"stream_id": stream_id},
+                {"$set": {"broadcasting": now_broadcasting}}
+            )
+            if now_broadcasting:
+                logger.info(f"Stream {stream_id} is now broadcasting!")
+        
+        return {"broadcasting": now_broadcasting, "ingress_status": status}
     except Exception as e:
         logger.error(f"Check broadcast error: {e}")
     
@@ -956,12 +983,33 @@ async def get_my_stream(user: dict = Depends(get_current_user)):
 
 @api_router.get("/streams/{stream_id}/chat")
 async def get_chat_messages(stream_id: str, limit: int = 50):
+
     messages = await db.chat_messages.find(
         {"stream_id": stream_id}, {"_id": 0}
     ).sort("created_at", -1).limit(limit).to_list(limit)
     
     messages.reverse()
     return messages
+
+@api_router.put("/streams/{stream_id}/set-broadcasting")
+async def set_broadcasting(stream_id: str, request: Request, user: dict = Depends(get_current_user)):
+    """Manual toggle for broadcasting status - streamer can confirm they're live."""
+    stream = await db.streams.find_one({"stream_id": stream_id})
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    if stream["user_id"] != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    body = await request.json()
+    broadcasting = bool(body.get("broadcasting", False))
+    
+    await db.streams.update_one(
+        {"stream_id": stream_id},
+        {"$set": {"broadcasting": broadcasting}}
+    )
+    
+    logger.info(f"Stream {stream_id} broadcasting manually set to {broadcasting}")
+    return {"broadcasting": broadcasting}
 
 @api_router.post("/streams/{stream_id}/chat")
 async def send_chat_message(stream_id: str, message: ChatMessage, user: dict = Depends(get_current_user)):

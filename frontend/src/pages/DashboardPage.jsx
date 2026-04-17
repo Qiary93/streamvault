@@ -275,6 +275,24 @@ export default function DashboardPage() {
                     <p className="text-xs text-[#A0A0AB] mt-3">
                       Your stream will appear on the platform once OBS is connected.
                     </p>
+                    <button
+                      onClick={async () => {
+                        try {
+                          await axios.put(`${API}/api/streams/${myStream.stream_id}/set-broadcasting`, 
+                            { broadcasting: true },
+                            { withCredentials: true }
+                          );
+                          setBroadcasting(true);
+                          toast.success('Stream is now live and visible to viewers!');
+                        } catch (err) {
+                          toast.error('Failed to set broadcasting status');
+                        }
+                      }}
+                      className="mt-4 px-5 py-2 bg-[#00E5FF] text-black font-bold text-sm rounded-lg hover:bg-[#00B3CC] transition-colors"
+                      data-testid="confirm-live-btn"
+                    >
+                      OBS Connected? Confirm Live
+                    </button>
                   </>
                 )}
               </div>
