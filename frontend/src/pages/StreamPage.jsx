@@ -308,13 +308,23 @@ export default function StreamPage() {
                 >
                   {stream.display_name || stream.username}
                 </Link>
-                <div className="flex items-center gap-4 mt-2 text-sm text-[#A0A0AB]">
+                <div className="flex items-center flex-wrap gap-4 mt-2 text-sm text-[#A0A0AB]">
                   {stream.category_name && (
                     <Link 
                       to={`/category/${stream.category_id}`}
                       className="hover:text-[#00E5FF] transition-colors"
                     >
                       {stream.category_name}
+                    </Link>
+                  )}
+                  {stream.game_name && (
+                    <Link 
+                      to={`/game/${encodeURIComponent(stream.game_name)}`}
+                      className="flex items-center gap-1 px-2 py-0.5 bg-[#00E5FF]/10 text-[#00E5FF] rounded-full hover:bg-[#00E5FF]/20 transition-colors text-xs font-medium"
+                      data-testid="game-link"
+                    >
+                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><path d="M17 4H7a5 5 0 0 0-5 5v6a5 5 0 0 0 5 5h10a5 5 0 0 0 5-5V9a5 5 0 0 0-5-5ZM8 14H7v1a1 1 0 0 1-2 0v-1H4a1 1 0 0 1 0-2h1v-1a1 1 0 0 1 2 0v1h1a1 1 0 0 1 0 2Zm7-1a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm3 3a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/></svg>
+                      {stream.game_name}
                     </Link>
                   )}
                   <span className="flex items-center gap-1">
@@ -454,9 +464,14 @@ export default function StreamPage() {
           {stream.tags && stream.tags.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-2">
               {stream.tags.map((tag, i) => (
-                <span key={i} className="px-2.5 py-1 bg-[#00E5FF]/10 text-[#00E5FF] text-xs font-medium rounded-full">
+                <Link 
+                  key={i} 
+                  to={`/tag/${encodeURIComponent(tag)}`}
+                  className="px-2.5 py-1 bg-[#00E5FF]/10 text-[#00E5FF] text-xs font-medium rounded-full hover:bg-[#00E5FF]/20 transition-colors"
+                  data-testid={`tag-link-${tag}`}
+                >
                   #{tag}
-                </span>
+                </Link>
               ))}
             </div>
           )}

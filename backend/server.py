@@ -182,6 +182,7 @@ class StreamCreate(BaseModel):
     thumbnail_url: Optional[str] = None
     tags: Optional[List[str]] = None
     quality: Optional[str] = "720p"
+    game_name: Optional[str] = None
 
 class StreamUpdate(BaseModel):
     title: Optional[str] = None
@@ -191,6 +192,7 @@ class StreamUpdate(BaseModel):
     is_live: Optional[bool] = None
     tags: Optional[List[str]] = None
     quality: Optional[str] = None
+    game_name: Optional[str] = None
 
 class StreamResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -792,6 +794,7 @@ async def create_stream(stream_data: StreamCreate, user: dict = Depends(get_curr
         "thumbnail_url": stream_data.thumbnail_url,
         "tags": tags,
         "quality": quality,
+        "game_name": stream_data.game_name.strip()[:100] if stream_data.game_name else None,
         "viewer_count": 0,
         "is_live": True,
         "broadcasting": False,
@@ -1290,6 +1293,42 @@ async def serve_file(path: str):
     except Exception as e:
         logger.error(f"File serve error: {e}")
         raise HTTPException(status_code=404, detail="File not found")
+
+# ============= TAG & GAME DISCOVERY =============
+
+@api_router.get("/streams/by-tag/{tag}")
+async def get_streams_by_tag(tag: str, limit: int = 20):
+    streams = await db.streams.find(
+        {"is_live": True, "broadcasting": True, "tags": tag.lower()},
+        {"_id": 0, "whip_token": 0}
+    ).sort("viewer_count", -1).limit(limit).to_list(limit)
+    
+    for stream in streams:
+        user = await db.users.find_one({"user_id": stream["user_id"]}, {"_id": 0, "username": 1, "display_name": 1, "avatar_url": 1})
+        if user:
+            stream.update(user)
+        category = await db.categories.find_one({"category_id": stream.get("category_id")}, {"_id": 0, "name": 1})
+        if category:
+            stream["category_name"] = category["name"]
+    
+    return streams
+
+@api_router.get("/streams/by-game/{game_name}")
+async def get_streams_by_game(game_name: str, limit: int = 20):
+    streams = await db.streams.find(
+        {"is_live": True, "broadcasting": True, "game_name": {"$regex": f"^{game_name}$", "$options": "i"}},
+        {"_id": 0, "whip_token": 0}
+    ).sort("viewer_count", -1).limit(limit).to_list(limit)
+    
+    for stream in streams:
+        user = await db.users.find_one({"user_id": stream["user_id"]}, {"_id": 0, "username": 1, "display_name": 1, "avatar_url": 1})
+        if user:
+            stream.update(user)
+        category = await db.categories.find_one({"category_id": stream.get("category_id")}, {"_id": 0, "name": 1})
+        if category:
+            stream["category_name"] = category["name"]
+    
+    return streams
 
 # ============= RECOMMENDED STREAMERS =============
 

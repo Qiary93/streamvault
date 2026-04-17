@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
+import axios from 'axios';
 import { 
   House, 
   Compass, 
@@ -18,6 +20,8 @@ import {
   CaretRight,
   Play
 } from '@phosphor-icons/react';
+
+const API = process.env.REACT_APP_BACKEND_URL;
 
 const navItems = [
   { icon: House, label: 'Home', path: '/' },
@@ -38,8 +42,19 @@ const categories = [
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [recommended, setRecommended] = useState([]);
   const location = useLocation();
   const { user } = useAuth();
+
+  useEffect(() => {
+    const fetchRecommended = async () => {
+      try {
+        const res = await axios.get(`${API}/api/recommended`, { withCredentials: true });
+        setRecommended(res.data || []);
+      } catch (e) {}
+    };
+    fetchRecommended();
+  }, [user?.user_id]);
 
   return (
     <>
@@ -147,6 +162,34 @@ export default function Sidebar() {
                   </Link>
                 );
               })}
+            </div>
+          </div>
+        )}
+
+        {/* Recommended Streamers */}
+        {!collapsed && recommended.length > 0 && (
+          <div className="mt-4 px-4 pb-4" data-testid="sidebar-recommended">
+            <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-[#00E5FF] mb-3">Recommended</h3>
+            <div className="space-y-1">
+              {recommended.slice(0, 10).map((s) => (
+                <Link
+                  key={s.user_id}
+                  to={`/user/${s.username}`}
+                  className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[#A0A0AB] hover:bg-white/5 hover:text-white transition-all duration-200"
+                  data-testid={`rec-${s.user_id}`}
+                >
+                  <Avatar className={`w-6 h-6 flex-shrink-0 ${s.is_streaming ? 'avatar-live' : ''}`}>
+                    <AvatarImage src={s.avatar_url} alt={s.display_name || s.username} />
+                    <AvatarFallback className="bg-[#292938] text-[#00E5FF] text-[10px]">
+                      {(s.display_name || s.username)?.charAt(0).toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="text-sm truncate">{s.display_name || s.username}</span>
+                  {s.is_streaming && (
+                    <span className="w-2 h-2 bg-red-500 rounded-full flex-shrink-0 ml-auto" />
+                  )}
+                </Link>
+              ))}
             </div>
           </div>
         )}

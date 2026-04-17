@@ -18,6 +18,8 @@ import VODPage from './pages/VODPage';
 import VODDetailPage from './pages/VODDetailPage';
 import SubscriptionSuccess from './pages/SubscriptionSuccess';
 import AdminPage from './pages/AdminPage';
+import TagDiscoveryPage from './pages/TagDiscoveryPage';
+import GameDiscoveryPage from './pages/GameDiscoveryPage';
 
 // Layout
 import Layout from './components/Layout';
@@ -63,6 +65,8 @@ function AppRouter() {
         <Route path="/stream/:streamId" element={<StreamPage />} />
         <Route path="/user/:username" element={<ProfilePage />} />
         <Route path="/search" element={<SearchPage />} />
+        <Route path="/tag/:tag" element={<TagDiscoveryPage />} />
+        <Route path="/game/:gameName" element={<GameDiscoveryPage />} />
         <Route path="/vods" element={<VODPage />} />
         <Route path="/vod/:streamId" element={<VODDetailPage />} />
         <Route path="/donation/success" element={<DonationSuccess />} />

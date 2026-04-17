@@ -34,7 +34,8 @@ export default function DashboardPage() {
     category_id: '',
     thumbnail_url: '',
     tags: [],
-    quality: '720p'
+    quality: '720p',
+    game_name: ''
   });
 
   useEffect(() => {
@@ -429,6 +430,18 @@ export default function DashboardPage() {
                           ))}
                         </SelectContent>
                       </Select>
+                    </div>
+
+                    <div>
+                      <label className="text-sm text-[#A0A0AB] block mb-1.5">Game Name <span className="text-[#A0A0AB]/50">(optional)</span></label>
+                      <Input
+                        value={streamForm.game_name}
+                        onChange={(e) => setStreamForm(prev => ({ ...prev, game_name: e.target.value }))}
+                        placeholder="e.g. Valorant, Minecraft, CS2..."
+                        maxLength={100}
+                        className="bg-[#1A1A24] border-white/10 text-white"
+                        data-testid="stream-game-input"
+                      />
                     </div>
 
                     <div>
