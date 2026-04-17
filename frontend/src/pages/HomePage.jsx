@@ -1,30 +1,29 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, Compass } from '@phosphor-icons/react';
+import { ArrowRight, Broadcast } from '@phosphor-icons/react';
 import StreamCard from '../components/StreamCard';
 import CategoryCard from '../components/CategoryCard';
 import { Button } from '../components/ui/button';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import axios from 'axios';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
 export default function HomePage() {
-  const [featured, setFeatured] = useState({ top_streams: [], categories: [], recommended_streamers: [] });
   const [allCategories, setAllCategories] = useState([]);
+  const [liveStreams, setLiveStreams] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [featuredRes, categoriesRes] = await Promise.all([
-          axios.get(`${API}/api/featured`),
-          axios.get(`${API}/api/categories`)
+        const [categoriesRes, streamsRes] = await Promise.all([
+          axios.get(`${API}/api/categories`),
+          axios.get(`${API}/api/streams?limit=20`)
         ]);
-        setFeatured(featuredRes.data);
         setAllCategories(categoriesRes.data);
+        setLiveStreams(streamsRes.data);
       } catch (error) {
-        console.error('Error fetching featured:', error);
+        console.error('Error fetching data:', error);
       } finally {
         setLoading(false);
       }
@@ -66,28 +65,8 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Live Now */}
-      {featured.top_streams.length > 0 && (
-        <section data-testid="live-streams-section">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 bg-red-500 rounded-full live-indicator" />
-              <h2 className="text-xl lg:text-2xl font-bold text-white font-['Outfit']">Live Now</h2>
-            </div>
-            <Link to="/browse" className="text-[#00E5FF] text-sm hover:underline flex items-center gap-1">
-              View all <ArrowRight className="w-4 h-4" />
-            </Link>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {featured.top_streams.map((stream) => (
-              <StreamCard key={stream.stream_id} stream={stream} />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* Categories */}
-      {(allCategories.length > 0 || featured.categories.length > 0) && (
+      {/* Browse Categories */}
+      {allCategories.length > 0 && (
         <section data-testid="categories-section">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl lg:text-2xl font-bold text-white font-['Outfit']">Browse Categories</h2>
@@ -96,60 +75,38 @@ export default function HomePage() {
             </Link>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
-            {(allCategories.length > 0 ? allCategories : featured.categories).map((category) => (
+            {allCategories.map((category) => (
               <CategoryCard key={category.category_id} category={category} />
             ))}
           </div>
         </section>
       )}
 
-      {/* Browse Section */}
-      <section data-testid="browse-section">
+      {/* Live Streams */}
+      <section data-testid="live-streams-section">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
-            <Compass weight="fill" className="w-5 h-5 text-[#00E5FF]" />
-            <h2 className="text-xl lg:text-2xl font-bold text-white font-['Outfit']">Browse</h2>
+            <div className="w-2 h-2 bg-red-500 rounded-full live-indicator" />
+            <h2 className="text-xl lg:text-2xl font-bold text-white font-['Outfit']">Live Streams</h2>
+            <span className="text-sm text-[#A0A0AB]">({liveStreams.length})</span>
           </div>
           <Link to="/browse" className="text-[#00E5FF] text-sm hover:underline flex items-center gap-1">
             View all <ArrowRight className="w-4 h-4" />
           </Link>
         </div>
-        <Tabs defaultValue="categories">
-          <TabsList className="bg-[#0F0F16] border border-white/10 mb-4">
-            <TabsTrigger 
-              value="categories" 
-              className="data-[state=active]:bg-[#00E5FF] data-[state=active]:text-black"
-            >
-              Categories
-            </TabsTrigger>
-            <TabsTrigger 
-              value="streams" 
-              className="data-[state=active]:bg-[#00E5FF] data-[state=active]:text-black"
-            >
-              Live Streams
-            </TabsTrigger>
-          </TabsList>
-          <TabsContent value="categories">
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
-              {(allCategories.length > 0 ? allCategories : featured.categories).map((category) => (
-                <CategoryCard key={category.category_id} category={category} />
-              ))}
-            </div>
-          </TabsContent>
-          <TabsContent value="streams">
-            {featured.top_streams.length > 0 ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                {featured.top_streams.map((stream) => (
-                  <StreamCard key={stream.stream_id} stream={stream} />
-                ))}
-              </div>
-            ) : (
-              <div className="text-center py-12 bg-[#0F0F16] rounded-xl">
-                <p className="text-[#A0A0AB]">No live streams at the moment. Check back soon!</p>
-              </div>
-            )}
-          </TabsContent>
-        </Tabs>
+        {liveStreams.length > 0 ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {liveStreams.map((stream) => (
+              <StreamCard key={stream.stream_id} stream={stream} />
+            ))}
+          </div>
+        ) : (
+          <div className="text-center py-16 bg-[#0F0F16] rounded-xl">
+            <Broadcast weight="fill" className="w-12 h-12 text-[#292938] mx-auto mb-4" />
+            <h2 className="text-lg font-semibold text-white mb-2">No live streams right now</h2>
+            <p className="text-[#A0A0AB]">Be the first to go live! Head to your <Link to="/dashboard" className="text-[#00E5FF] hover:underline">Dashboard</Link> to start streaming.</p>
+          </div>
+        )}
       </section>
     </div>
   );

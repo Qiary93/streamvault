@@ -643,7 +643,7 @@ async def get_categories():
     categories = await db.categories.find({}, {"_id": 0}).to_list(100)
     
     for cat in categories:
-        count = await db.streams.count_documents({"category_id": cat["category_id"], "is_live": True, "broadcasting": True})
+        count = await db.streams.count_documents({"category_id": cat["category_id"], "is_live": True})
         cat["stream_count"] = count
     
     return categories
@@ -655,7 +655,7 @@ async def get_category(category_id: str):
         raise HTTPException(status_code=404, detail="Category not found")
     
     streams = await db.streams.find(
-        {"category_id": category_id, "is_live": True, "broadcasting": True}, {"_id": 0}
+        {"category_id": category_id, "is_live": True}, {"_id": 0}
     ).sort("viewer_count", -1).to_list(50)
     
     for stream in streams:
@@ -672,7 +672,7 @@ async def get_category(category_id: str):
 
 @api_router.get("/streams")
 async def get_streams(category_id: Optional[str] = None, limit: int = 20, offset: int = 0):
-    query = {"is_live": True, "broadcasting": True}
+    query = {"is_live": True}
     if category_id:
         query["category_id"] = category_id
     
@@ -1147,7 +1147,7 @@ async def search(q: str, type: str = "all", limit: int = 20):
         ).to_list(100)
         matching_cat_ids = [c["category_id"] for c in matching_cats]
         
-        stream_query = {"is_live": True, "broadcasting": True, "$or": [
+        stream_query = {"is_live": True, "$or": [
             {"title": {"$regex": q, "$options": "i"}},
             {"description": {"$regex": q, "$options": "i"}},
             {"category_id": {"$in": matching_cat_ids}} if matching_cat_ids else {"_never": True}
@@ -1190,7 +1190,7 @@ async def search(q: str, type: str = "all", limit: int = 20):
 @api_router.get("/featured")
 async def get_featured():
     top_streams = await db.streams.find(
-        {"is_live": True, "broadcasting": True}, {"_id": 0, "whip_token": 0}
+        {"is_live": True}, {"_id": 0, "whip_token": 0}
     ).sort("viewer_count", -1).limit(6).to_list(6)
     
     for stream in top_streams:
@@ -1309,7 +1309,7 @@ async def serve_file(path: str):
 @api_router.get("/streams/by-tag/{tag}")
 async def get_streams_by_tag(tag: str, limit: int = 20):
     streams = await db.streams.find(
-        {"is_live": True, "broadcasting": True, "tags": tag.lower()},
+        {"is_live": True, "tags": tag.lower()},
         {"_id": 0, "whip_token": 0}
     ).sort("viewer_count", -1).limit(limit).to_list(limit)
     
@@ -1326,7 +1326,7 @@ async def get_streams_by_tag(tag: str, limit: int = 20):
 @api_router.get("/streams/by-game/{game_name}")
 async def get_streams_by_game(game_name: str, limit: int = 20):
     streams = await db.streams.find(
-        {"is_live": True, "broadcasting": True, "game_name": {"$regex": f"^{game_name}$", "$options": "i"}},
+        {"is_live": True, "game_name": {"$regex": f"^{game_name}$", "$options": "i"}},
         {"_id": 0, "whip_token": 0}
     ).sort("viewer_count", -1).limit(limit).to_list(limit)
     
