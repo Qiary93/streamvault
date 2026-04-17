@@ -20,14 +20,6 @@ const donationPackages = [
   { id: 'mega', amount: 100, label: '$100' },
 ];
 
-const subscriptionTiers = [
-  { id: 'tier1', amount: 4.99, name: 'Tier 1', perks: 'Ad-free viewing, custom badge' },
-  { id: 'tier2', amount: 9.99, name: 'Tier 2', perks: 'Tier 1 + Custom emotes, priority chat' },
-  { id: 'tier3', amount: 24.99, name: 'Tier 3', perks: 'Tier 2 + VIP access, exclusive streams' },
-  { id: 'tier4', amount: 49.99, name: 'Tier 4', perks: 'Tier 3 + Personal shoutout, mod access' },
-  { id: 'tier5', amount: 100.00, name: 'Tier 5', perks: 'All perks + Direct streamer contact' },
-];
-
 export default function StreamPage() {
   const { streamId } = useParams();
   const { user } = useAuth();
@@ -46,6 +38,7 @@ export default function StreamPage() {
   const [selectedQuality, setSelectedQuality] = useState('Auto');
   const [showQualityMenu, setShowQualityMenu] = useState(false);
   const [customDonationAmount, setCustomDonationAmount] = useState('');
+  const [streamerTiers, setStreamerTiers] = useState([]);
 
   useEffect(() => {
     const fetchStream = async () => {
@@ -55,6 +48,14 @@ export default function StreamPage() {
         });
         setStream(response.data);
         setFollowing(response.data.is_following);
+        
+        // Fetch streamer's custom tiers
+        try {
+          const tiersRes = await axios.get(`${API}/api/users/${response.data.user_id}/subscription-tiers`);
+          setStreamerTiers(tiersRes.data);
+        } catch (e) {
+          setStreamerTiers([]);
+        }
         
         // Check subscription status
         if (response.data.user_id) {
@@ -466,15 +467,15 @@ export default function StreamPage() {
                     <DialogTitle className="text-white">Subscribe to {stream.display_name || stream.username}</DialogTitle>
                   </DialogHeader>
                   <div className="space-y-3 pt-4">
-                    {subscriptionTiers.map((tier) => (
+                    {streamerTiers.map((tier) => (
                       <button
-                        key={tier.id}
-                        onClick={() => setSelectedTier(tier.id)}
+                        key={tier.tier_id || tier.id}
+                        onClick={() => setSelectedTier(tier.tier_id || tier.id)}
                         className={`w-full p-4 rounded-lg border text-left transition-colors
-                          ${selectedTier === tier.id 
+                          ${selectedTier === (tier.tier_id || tier.id)
                             ? 'border-[#00E5FF] bg-[#00E5FF]/10' 
                             : 'border-white/10 hover:border-white/30'}`}
-                        data-testid={`sub-${tier.id}`}
+                        data-testid={`sub-${tier.tier_id || tier.id}`}
                       >
                         <div className="flex items-center justify-between mb-1">
                           <span className="font-bold text-white">{tier.name}</span>
@@ -483,13 +484,16 @@ export default function StreamPage() {
                         <p className="text-xs text-[#A0A0AB]">{tier.perks}</p>
                       </button>
                     ))}
+                    {streamerTiers.length === 0 && (
+                      <p className="text-center text-[#A0A0AB] py-4">No subscription tiers available</p>
+                    )}
                     <Button 
                       onClick={handleSubscribe}
                       disabled={!selectedTier}
                       className="w-full bg-[#00E5FF] text-black font-bold hover:bg-[#00B3CC] disabled:opacity-50"
                       data-testid="subscribe-submit-btn"
                     >
-                      Subscribe {selectedTier && `- $${subscriptionTiers.find(t => t.id === selectedTier)?.amount}/mo`}
+                      Subscribe {selectedTier && `- $${streamerTiers.find(t => (t.tier_id || t.id) === selectedTier)?.amount}/mo`}
                     </Button>
                   </div>
                 </DialogContent>

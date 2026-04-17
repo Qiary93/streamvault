@@ -68,13 +68,13 @@ export default function Sidebar() {
 
       {/* Sidebar */}
       <aside 
-        className={`fixed left-0 top-0 h-full bg-[#0F0F16] border-r border-white/5 z-50 transition-all duration-300
+        className={`fixed left-0 top-0 h-full bg-[#0F0F16] border-r border-white/5 z-50 transition-all duration-300 flex flex-col
           ${collapsed ? 'w-16' : 'w-64'} 
           ${mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}
         data-testid="sidebar"
       >
         {/* Logo */}
-        <div className="h-16 flex items-center justify-between px-4 border-b border-white/5">
+        <div className="h-16 flex items-center justify-between px-4 border-b border-white/5 flex-shrink-0">
           {!collapsed && (
             <Link to="/" className="flex items-center gap-2" data-testid="sidebar-logo">
               <Broadcast weight="fill" className="w-8 h-8 text-[#00E5FF]" />
@@ -93,6 +93,8 @@ export default function Sidebar() {
           </button>
         </div>
 
+        {/* Scrollable content */}
+        <div className="flex-1 overflow-y-auto overflow-x-hidden">
         {/* Navigation */}
         <nav className="p-2 space-y-1">
           {navItems.map((item) => {
@@ -193,6 +195,7 @@ export default function Sidebar() {
             </div>
           </div>
         )}
+        </div>
       </aside>
 
       {/* Mobile menu button */}
