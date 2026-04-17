@@ -14,6 +14,8 @@ const API = process.env.REACT_APP_BACKEND_URL;
 export default function ProfilePage() {
   const { username } = useParams();
   const { user: currentUser } = useAuth();
+  const [editingBio, setEditingBio] = useState(false);
+  const [bioText, setBioText] = useState('');
   const [profile, setProfile] = useState(null);
   const [streams, setStreams] = useState([]);
   const [following, setFollowing] = useState(false);
@@ -85,6 +87,17 @@ export default function ProfilePage() {
       </div>
     );
   }
+
+  const handleSaveBio = async () => {
+    try {
+      await axios.put(`${API}/api/users/bio`, { bio: bioText }, { withCredentials: true });
+      setProfile(prev => ({ ...prev, bio: bioText }));
+      setEditingBio(false);
+      toast.success('Bio updated!');
+    } catch (err) {
+      toast.error('Failed to update bio');
+    }
+  };
 
   const isOwnProfile = currentUser?.user_id === profile.user_id;
 
@@ -247,15 +260,47 @@ export default function ProfilePage() {
 
           <TabsContent value="about" className="mt-6">
             <div className="bg-[#0F0F16] rounded-xl p-6 max-w-2xl">
-              <h3 className="text-lg font-semibold text-white mb-4">About {profile.display_name || profile.username}</h3>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-white">About {profile.display_name || profile.username}</h3>
+                {isOwnProfile && !editingBio && (
+                  <button
+                    onClick={() => { setEditingBio(true); setBioText(profile.bio || ''); }}
+                    className="text-sm text-[#00E5FF] hover:underline"
+                    data-testid="edit-bio-btn"
+                  >
+                    Edit Bio
+                  </button>
+                )}
+              </div>
               
-              {profile.bio ? (
-                <p className="text-[#A0A0AB] mb-6">{profile.bio}</p>
+              {editingBio ? (
+                <div className="space-y-3">
+                  <textarea
+                    value={bioText}
+                    onChange={(e) => setBioText(e.target.value)}
+                    maxLength={500}
+                    rows={4}
+                    placeholder="Tell viewers about yourself..."
+                    className="w-full p-3 bg-[#1A1A24] border border-white/10 rounded-lg text-white placeholder-[#A0A0AB] focus:outline-none focus:border-[#00E5FF] resize-none"
+                    data-testid="bio-textarea"
+                  />
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-[#A0A0AB]">{bioText.length}/500</span>
+                    <div className="flex gap-2">
+                      <button onClick={() => setEditingBio(false)} className="px-4 py-2 text-sm text-[#A0A0AB] hover:text-white">Cancel</button>
+                      <button onClick={handleSaveBio} className="px-4 py-2 text-sm bg-[#00E5FF] text-black font-bold rounded-lg hover:bg-[#00B3CC]" data-testid="save-bio-btn">Save</button>
+                    </div>
+                  </div>
+                </div>
+              ) : profile.bio ? (
+                <p className="text-[#A0A0AB] mb-6 whitespace-pre-wrap">{profile.bio}</p>
               ) : (
-                <p className="text-[#A0A0AB] mb-6 italic">No bio yet</p>
+                <p className="text-[#A0A0AB] mb-6 italic">
+                  {isOwnProfile ? 'Click "Edit Bio" to add your bio' : 'No bio yet'}
+                </p>
               )}
 
-              <div className="flex items-center gap-2 text-sm text-[#A0A0AB]">
+              <div className="flex items-center gap-2 text-sm text-[#A0A0AB] mt-4">
                 <CalendarBlank className="w-4 h-4" />
                 <span>Joined {new Date(profile.created_at).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</span>
               </div>

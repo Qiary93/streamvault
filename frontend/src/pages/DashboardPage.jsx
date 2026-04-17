@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import TagInput from '../components/TagInput';
 import RichTextEditor from '../components/RichTextEditor';
+import SubscriptionTiersSettings from '../components/SubscriptionTiersSettings';
 import { toast } from 'sonner';
 import axios from 'axios';
 
@@ -625,6 +626,9 @@ export default function DashboardPage() {
           </details>
         </div>
       </div>
+
+      {/* Subscription Tiers Settings */}
+      <SubscriptionTiersSettings />
 
       {/* Recent Donations */}
       <div className="bg-[#0F0F16] border border-white/5 rounded-xl p-6">

@@ -1048,13 +1048,18 @@ async def create_donation_checkout(request: Request, user: dict = Depends(get_cu
     body = await request.json()
     streamer_id = body.get("streamer_id")
     package_id = body.get("package_id")
+    custom_amount = body.get("custom_amount")
     origin_url = body.get("origin_url")
     message = body.get("message", "")
     
-    if package_id not in DONATION_AMOUNTS:
+    if package_id == "custom" and custom_amount:
+        amount = round(float(custom_amount), 2)
+        if amount < 1 or amount > 10000:
+            raise HTTPException(status_code=400, detail="Custom amount must be between $1 and $10,000")
+    elif package_id in DONATION_AMOUNTS:
+        amount = DONATION_AMOUNTS[package_id]
+    else:
         raise HTTPException(status_code=400, detail="Invalid donation package")
-    
-    amount = DONATION_AMOUNTS[package_id]
     
     streamer = await db.users.find_one({"user_id": streamer_id})
     if not streamer:
@@ -1759,9 +1764,13 @@ async def create_subscription_checkout(request: Request, user: dict = Depends(ge
     origin_url = body.get("origin_url")
     
     if tier_id not in SUBSCRIPTION_TIERS:
-        raise HTTPException(status_code=400, detail="Invalid subscription tier")
-    
-    tier = SUBSCRIPTION_TIERS[tier_id]
+        # Check streamer custom tiers
+        custom_tier = await db.streamer_tiers.find_one({"tier_id": tier_id, "user_id": streamer_id, "active": True})
+        if not custom_tier:
+            raise HTTPException(status_code=400, detail="Invalid subscription tier")
+        tier = {"name": custom_tier["name"], "amount": custom_tier["amount"], "perks": custom_tier.get("perks", "")}
+    else:
+        tier = SUBSCRIPTION_TIERS[tier_id]
     amount = tier["amount"]
     
     streamer = await db.users.find_one({"user_id": streamer_id})
@@ -2249,6 +2258,86 @@ async def delete_storage_config(user: dict = Depends(get_current_user)):
     
     await db.admin_config.delete_one({"type": "s3_storage"})
     return {"message": "Storage configuration deleted"}
+
+# ============= ADMIN - SITE SETTINGS =============
+
+@api_router.get("/admin/site-settings")
+async def get_site_settings(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    config = await db.admin_config.find_one({"type": "site_settings"}, {"_id": 0})
+    return config or {"type": "site_settings", "title": "StreamVault", "description": "Live streaming platform", "icon_url": "", "configured": False}
+
+@api_router.post("/admin/site-settings")
+async def save_site_settings(request: Request, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    body = await request.json()
+    config = {
+        "type": "site_settings",
+        "title": body.get("title", "StreamVault"),
+        "description": body.get("description", ""),
+        "icon_url": body.get("icon_url", ""),
+        "configured": True,
+        "updated_at": datetime.now(timezone.utc)
+    }
+    await db.admin_config.update_one({"type": "site_settings"}, {"$set": config}, upsert=True)
+    return {"message": "Site settings saved"}
+
+@api_router.get("/site-settings")
+async def get_public_site_settings():
+    """Public endpoint - no auth required."""
+    config = await db.admin_config.find_one({"type": "site_settings"}, {"_id": 0})
+    return config or {"title": "StreamVault", "description": "Live streaming platform", "icon_url": ""}
+
+# ============= STREAMER SUBSCRIPTION TIERS =============
+
+@api_router.get("/users/{user_id}/subscription-tiers")
+async def get_user_sub_tiers(user_id: str):
+    tiers = await db.streamer_tiers.find({"user_id": user_id, "active": True}, {"_id": 0}).sort("amount", 1).to_list(10)
+    if not tiers:
+        return [{"tier_id": k, **v} for k, v in SUBSCRIPTION_TIERS.items()]
+    return tiers
+
+@api_router.post("/my/subscription-tiers")
+async def save_my_sub_tiers(request: Request, user: dict = Depends(get_current_user)):
+    body = await request.json()
+    tiers = body.get("tiers", [])
+    
+    await db.streamer_tiers.delete_many({"user_id": user["user_id"]})
+    
+    for t in tiers[:5]:
+        name = str(t.get("name", ""))[:50]
+        amount = float(t.get("amount", 0))
+        perks = str(t.get("perks", ""))[:200]
+        if name and amount > 0:
+            await db.streamer_tiers.insert_one({
+                "tier_id": f"tier_{uuid.uuid4().hex[:8]}",
+                "user_id": user["user_id"],
+                "name": name,
+                "amount": round(amount, 2),
+                "perks": perks,
+                "active": True,
+                "created_at": datetime.now(timezone.utc)
+            })
+    
+    return {"message": "Subscription tiers saved"}
+
+@api_router.get("/my/subscription-tiers")
+async def get_my_sub_tiers(user: dict = Depends(get_current_user)):
+    tiers = await db.streamer_tiers.find({"user_id": user["user_id"], "active": True}, {"_id": 0}).sort("amount", 1).to_list(10)
+    return tiers
+
+# ============= USER BIO EDIT =============
+
+@api_router.put("/users/bio")
+async def update_bio(request: Request, user: dict = Depends(get_current_user)):
+    body = await request.json()
+    bio = str(body.get("bio", ""))[:500]
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"bio": bio}})
+    return {"message": "Bio updated", "bio": bio}
+
+# ============= CUSTOM DONATION =============
 
 # ============= LIVEKIT EGRESS (RECORDING) =============
 

@@ -45,6 +45,7 @@ export default function StreamPage() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [selectedQuality, setSelectedQuality] = useState('Auto');
   const [showQualityMenu, setShowQualityMenu] = useState(false);
+  const [customDonationAmount, setCustomDonationAmount] = useState('');
 
   useEffect(() => {
     const fetchStream = async () => {
@@ -113,10 +114,16 @@ export default function StreamPage() {
       return;
     }
 
+    if (selectedPackage === 'custom' && (!customDonationAmount || parseFloat(customDonationAmount) < 1)) {
+      toast.error('Please enter an amount of at least $1');
+      return;
+    }
+
     try {
       const response = await axios.post(`${API}/api/donations/checkout`, {
         streamer_id: stream.user_id,
         package_id: selectedPackage,
+        custom_amount: selectedPackage === 'custom' ? parseFloat(customDonationAmount) : undefined,
         origin_url: window.location.origin,
         message: donationMessage
       }, { withCredentials: true });
@@ -331,6 +338,10 @@ export default function StreamPage() {
                     <Users className="w-4 h-4" />
                     {stream.follower_count?.toLocaleString() || 0} followers
                   </span>
+                  <span className="flex items-center gap-1 text-red-400">
+                    <Eye className="w-4 h-4" />
+                    {stream.viewer_count?.toLocaleString() || 0} watching
+                  </span>
                 </div>
               </div>
             </div>
@@ -366,11 +377,11 @@ export default function StreamPage() {
                     <DialogTitle className="text-white">Support {stream.display_name || stream.username}</DialogTitle>
                   </DialogHeader>
                   <div className="space-y-4 pt-4">
-                    <div className="grid grid-cols-5 gap-2">
+                    <div className="grid grid-cols-3 gap-2">
                       {donationPackages.map((pkg) => (
                         <button
                           key={pkg.id}
-                          onClick={() => setSelectedPackage(pkg.id)}
+                          onClick={() => { setSelectedPackage(pkg.id); setCustomDonationAmount(''); }}
                           className={`p-3 rounded-lg border text-center font-bold transition-colors
                             ${selectedPackage === pkg.id 
                               ? 'border-[#00E5FF] bg-[#00E5FF]/10 text-[#00E5FF]' 
@@ -380,22 +391,48 @@ export default function StreamPage() {
                           {pkg.label}
                         </button>
                       ))}
+                      <button
+                        onClick={() => setSelectedPackage('custom')}
+                        className={`p-3 rounded-lg border text-center font-bold transition-colors
+                          ${selectedPackage === 'custom' 
+                            ? 'border-[#00E5FF] bg-[#00E5FF]/10 text-[#00E5FF]' 
+                            : 'border-white/10 text-white hover:border-white/30'}`}
+                        data-testid="donate-custom"
+                      >
+                        Custom
+                      </button>
                     </div>
+                    {selectedPackage === 'custom' && (
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#A0A0AB] font-bold">$</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max="10000"
+                          step="0.01"
+                          value={customDonationAmount}
+                          onChange={(e) => setCustomDonationAmount(e.target.value)}
+                          placeholder="Enter amount"
+                          className="w-full h-10 pl-8 pr-4 bg-[#1A1A24] border border-white/10 rounded-lg text-white placeholder-[#A0A0AB] focus:outline-none focus:border-[#00E5FF]"
+                          data-testid="custom-amount-input"
+                        />
+                      </div>
+                    )}
                     <textarea
                       placeholder="Add a message (optional)"
                       value={donationMessage}
                       onChange={(e) => setDonationMessage(e.target.value)}
                       maxLength={200}
-                      className="w-full h-24 p-3 bg-[#1A1A24] border border-white/10 rounded-lg text-white placeholder-[#A0A0AB] focus:outline-none focus:border-[#00E5FF] resize-none"
+                      className="w-full h-20 p-3 bg-[#1A1A24] border border-white/10 rounded-lg text-white placeholder-[#A0A0AB] focus:outline-none focus:border-[#00E5FF] resize-none"
                       data-testid="donate-message"
                     />
                     <Button 
                       onClick={handleDonate}
-                      disabled={!selectedPackage}
+                      disabled={!selectedPackage || (selectedPackage === 'custom' && !customDonationAmount)}
                       className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:from-purple-600 hover:to-pink-600 disabled:opacity-50"
                       data-testid="donate-submit-btn"
                     >
-                      Donate {selectedPackage && donationPackages.find(p => p.id === selectedPackage)?.label}
+                      Donate {selectedPackage === 'custom' && customDonationAmount ? `$${customDonationAmount}` : (selectedPackage && donationPackages.find(p => p.id === selectedPackage)?.label)}
                     </Button>
                   </div>
                 </DialogContent>

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Navigate } from 'react-router-dom';
-import { Database, Shield, Check, Trash, Eye, EyeSlash } from '@phosphor-icons/react';
+import { Database, Shield, Check, Trash, Eye, EyeSlash, Globe, Upload } from '@phosphor-icons/react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
@@ -40,10 +40,47 @@ export default function AdminPage() {
     secret_key: '',
     force_path_style: true
   });
+  const [siteSettings, setSiteSettings] = useState({ title: 'StreamVault', description: '', icon_url: '' });
+  const [savingSite, setSavingSite] = useState(false);
 
   useEffect(() => {
     fetchConfig();
+    fetchSiteSettings();
   }, []);
+
+  const fetchSiteSettings = async () => {
+    try {
+      const res = await axios.get(`${API}/api/admin/site-settings`, { withCredentials: true });
+      if (res.data) setSiteSettings({ title: res.data.title || 'StreamVault', description: res.data.description || '', icon_url: res.data.icon_url || '' });
+    } catch (e) {}
+  };
+
+  const saveSiteSettings = async (e) => {
+    e.preventDefault();
+    setSavingSite(true);
+    try {
+      await axios.post(`${API}/api/admin/site-settings`, siteSettings, { withCredentials: true });
+      toast.success('Site settings saved!');
+    } catch (err) {
+      toast.error('Failed to save site settings');
+    } finally {
+      setSavingSite(false);
+    }
+  };
+
+  const handleIconUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const res = await axios.post(`${API}/api/upload/thumbnail`, formData, { withCredentials: true, headers: { 'Content-Type': 'multipart/form-data' } });
+      setSiteSettings(prev => ({ ...prev, icon_url: `${API}${res.data.url}` }));
+      toast.success('Icon uploaded');
+    } catch (err) {
+      toast.error('Failed to upload icon');
+    }
+  };
 
   const fetchConfig = async () => {
     try {
@@ -138,6 +175,40 @@ export default function AdminPage() {
       <div className="flex items-center gap-3 mb-8">
         <Shield weight="fill" className="w-8 h-8 text-[#00E5FF]" />
         <h1 className="text-2xl lg:text-3xl font-bold text-white font-['Outfit']">Admin Panel</h1>
+      </div>
+
+      {/* Site Settings */}
+      <div className="bg-[#0F0F16] border border-white/5 rounded-xl p-6 mb-6" data-testid="site-settings-section">
+        <div className="flex items-center gap-3 mb-6">
+          <Globe className="w-6 h-6 text-[#00E5FF]" />
+          <div>
+            <h2 className="text-lg font-semibold text-white">Site Settings</h2>
+            <p className="text-sm text-[#A0A0AB]">Website title, description, and icon</p>
+          </div>
+        </div>
+        <form onSubmit={saveSiteSettings} className="space-y-4">
+          <div>
+            <label className="text-sm text-[#A0A0AB] block mb-1.5">Website Title</label>
+            <Input value={siteSettings.title} onChange={(e) => setSiteSettings(prev => ({ ...prev, title: e.target.value }))} className="bg-[#1A1A24] border-white/10 text-white" data-testid="site-title-input" />
+          </div>
+          <div>
+            <label className="text-sm text-[#A0A0AB] block mb-1.5">Website Description</label>
+            <textarea value={siteSettings.description} onChange={(e) => setSiteSettings(prev => ({ ...prev, description: e.target.value }))} rows={3} className="w-full p-3 bg-[#1A1A24] border border-white/10 rounded-md text-white placeholder-[#A0A0AB] focus:outline-none focus:border-[#00E5FF] resize-none" data-testid="site-description-input" />
+          </div>
+          <div>
+            <label className="text-sm text-[#A0A0AB] block mb-1.5">Website Icon (Favicon)</label>
+            <div className="flex items-center gap-4">
+              {siteSettings.icon_url && <img src={siteSettings.icon_url} alt="Icon" className="w-10 h-10 rounded" />}
+              <label className="flex items-center gap-2 px-4 py-2 bg-[#1A1A24] border border-white/10 rounded-lg cursor-pointer hover:border-[#00E5FF]/50 transition-colors text-sm text-[#A0A0AB]">
+                <Upload className="w-4 h-4" /> Upload icon
+                <input type="file" accept="image/*" onChange={handleIconUpload} className="hidden" data-testid="icon-upload-input" />
+              </label>
+            </div>
+          </div>
+          <Button type="submit" disabled={savingSite} className="bg-[#00E5FF] text-black font-bold hover:bg-[#00B3CC] disabled:opacity-50" data-testid="save-site-btn">
+            {savingSite ? 'Saving...' : 'Save Site Settings'}
+          </Button>
+        </form>
       </div>
 
       {/* S3 Storage Configuration */}
