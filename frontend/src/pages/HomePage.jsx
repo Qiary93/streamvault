@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, TrendUp } from '@phosphor-icons/react';
+import { ArrowRight, Compass } from '@phosphor-icons/react';
 import StreamCard from '../components/StreamCard';
 import CategoryCard from '../components/CategoryCard';
-import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Button } from '../components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import axios from 'axios';
 
 const API = process.env.REACT_APP_BACKEND_URL;
@@ -103,43 +103,54 @@ export default function HomePage() {
         </section>
       )}
 
-      {/* Recommended Streamers */}
-      {featured.recommended_streamers.length > 0 && (
-        <section data-testid="recommended-section">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <TrendUp className="w-5 h-5 text-[#00E5FF]" />
-              <h2 className="text-xl lg:text-2xl font-bold text-white font-['Outfit']">Recommended Streamers</h2>
+      {/* Browse Section */}
+      <section data-testid="browse-section">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Compass weight="fill" className="w-5 h-5 text-[#00E5FF]" />
+            <h2 className="text-xl lg:text-2xl font-bold text-white font-['Outfit']">Browse</h2>
+          </div>
+          <Link to="/browse" className="text-[#00E5FF] text-sm hover:underline flex items-center gap-1">
+            View all <ArrowRight className="w-4 h-4" />
+          </Link>
+        </div>
+        <Tabs defaultValue="categories">
+          <TabsList className="bg-[#0F0F16] border border-white/10 mb-4">
+            <TabsTrigger 
+              value="categories" 
+              className="data-[state=active]:bg-[#00E5FF] data-[state=active]:text-black"
+            >
+              Categories
+            </TabsTrigger>
+            <TabsTrigger 
+              value="streams" 
+              className="data-[state=active]:bg-[#00E5FF] data-[state=active]:text-black"
+            >
+              Live Streams
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent value="categories">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
+              {(allCategories.length > 0 ? allCategories : featured.categories).map((category) => (
+                <CategoryCard key={category.category_id} category={category} />
+              ))}
             </div>
-          </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-            {featured.recommended_streamers.map((streamer) => (
-              <Link
-                key={streamer.user_id}
-                to={streamer.active_stream_id ? `/stream/${streamer.active_stream_id}` : `/user/${streamer.username}`}
-                className="group flex flex-col items-center p-4 bg-[#0F0F16] border border-white/5 rounded-xl hover:border-[#00E5FF]/30 transition-colors"
-                data-testid={`streamer-card-${streamer.user_id}`}
-              >
-                <Avatar className={`w-16 h-16 mb-3 ${streamer.is_streaming ? 'avatar-live' : ''}`}>
-                  <AvatarImage src={streamer.avatar_url} alt={streamer.display_name || streamer.username} />
-                  <AvatarFallback className="bg-[#292938] text-[#00E5FF] text-xl">
-                    {(streamer.display_name || streamer.username)?.charAt(0).toUpperCase()}
-                  </AvatarFallback>
-                </Avatar>
-                <h3 className="font-semibold text-white text-center group-hover:text-[#00E5FF] transition-colors">
-                  {streamer.display_name || streamer.username}
-                </h3>
-                <p className="text-xs text-[#A0A0AB]">@{streamer.username}</p>
-                {streamer.is_streaming && (
-                  <span className="mt-2 px-2 py-0.5 bg-red-500/20 text-red-400 text-xs font-medium rounded">
-                    LIVE
-                  </span>
-                )}
-              </Link>
-            ))}
-          </div>
-        </section>
-      )}
+          </TabsContent>
+          <TabsContent value="streams">
+            {featured.top_streams.length > 0 ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {featured.top_streams.map((stream) => (
+                  <StreamCard key={stream.stream_id} stream={stream} />
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-12 bg-[#0F0F16] rounded-xl">
+                <p className="text-[#A0A0AB]">No live streams at the moment. Check back soon!</p>
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
+      </section>
     </div>
   );
 }
