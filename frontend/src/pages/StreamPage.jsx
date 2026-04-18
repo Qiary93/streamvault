@@ -40,6 +40,7 @@ export default function StreamPage() {
   const [showQualityMenu, setShowQualityMenu] = useState(false);
   const [customDonationAmount, setCustomDonationAmount] = useState('');
   const [streamerTiers, setStreamerTiers] = useState([]);
+  const [adPlaying, setAdPlaying] = useState(true);
 
   useEffect(() => {
     const fetchStream = async () => {
