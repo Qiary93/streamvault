@@ -28,6 +28,8 @@ from livekit.protocol.ingress import CreateIngressRequest, IngressInput
 from emergentintegrations.payments.stripe.checkout import (
     StripeCheckout, CheckoutSessionResponse, CheckoutStatusResponse, CheckoutSessionRequest
 )
+import stripe as stripe_sdk
+stripe_sdk.api_key = os.environ.get("STRIPE_API_KEY", "")
 
 ROOT_DIR = Path(__file__).parent
 
@@ -2346,10 +2348,12 @@ async def get_my_revenue(user: dict = Depends(get_current_user)):
     """Get streamer's revenue summary."""
     donations = await db.donations.find({"streamer_id": user["user_id"]}, {"_id": 0, "amount": 1}).to_list(10000)
     subs = await db.subscriptions.find({"streamer_id": user["user_id"]}, {"_id": 0, "amount": 1}).to_list(10000)
+    ads = await db.ad_impressions.find({"streamer_id": user["user_id"]}, {"_id": 0, "streamer_earned": 1}).to_list(100000)
     
     total_donations = sum(d.get("amount", 0) for d in donations)
     total_subs = sum(s.get("amount", 0) for s in subs)
-    total_earned = total_donations + total_subs
+    total_ads = sum(a.get("streamer_earned", 0) for a in ads)
+    total_earned = total_donations + total_subs + total_ads
     
     # Get total withdrawn (completed)
     withdrawals = await db.withdrawals.find(
@@ -2368,6 +2372,7 @@ async def get_my_revenue(user: dict = Depends(get_current_user)):
     return {
         "total_donations": round(total_donations, 2),
         "total_subscriptions": round(total_subs, 2),
+        "total_ads": round(total_ads, 2),
         "total_earned": round(total_earned, 2),
         "total_withdrawn": round(total_withdrawn, 2),
         "total_pending": round(total_pending, 2),
@@ -2466,18 +2471,54 @@ async def approve_withdrawal(withdrawal_id: str, user: dict = Depends(get_curren
     if wd["status"] != "pending":
         raise HTTPException(status_code=400, detail=f"Withdrawal is already {wd['status']}")
     
-    # Process Stripe payout
     try:
-        api_key = os.environ.get("STRIPE_API_KEY")
-        # Note: Actual Stripe payouts require connected accounts or manual transfers
-        # For now, mark as completed and admin handles the actual transfer
+        # Check if automated payouts are enabled
+        payout_cfg = await db.admin_config.find_one({"type": "payout_settings"}, {"_id": 0})
+        automated = bool(payout_cfg and payout_cfg.get("automated_enabled"))
+        
+        payout_info = {"method": "manual"}
+        
+        if automated:
+            # Try Stripe Connect transfer + payout
+            connect = await db.stripe_connect_accounts.find_one({"user_id": wd["user_id"]}, {"_id": 0})
+            if not connect:
+                raise HTTPException(status_code=400, detail="Automated payouts enabled but streamer has no Stripe Connect account")
+            if not connect.get("payouts_enabled"):
+                raise HTTPException(status_code=400, detail="Streamer's Stripe Connect account is not yet verified for payouts")
+            
+            amount_cents = int(round(float(wd["amount"]) * 100))
+            
+            # Transfer funds from platform → connected account, then create payout on connected account
+            try:
+                transfer = stripe_sdk.Transfer.create(
+                    amount=amount_cents,
+                    currency=connect.get("currency", "usd"),
+                    destination=connect["stripe_account_id"],
+                    description=f"Withdrawal {withdrawal_id}",
+                )
+                payout = stripe_sdk.Payout.create(
+                    amount=amount_cents,
+                    currency=connect.get("currency", "usd"),
+                    stripe_account=connect["stripe_account_id"],
+                    description=f"StreamVault payout {withdrawal_id}",
+                )
+                payout_info = {
+                    "method": "stripe_connect",
+                    "transfer_id": transfer["id"],
+                    "payout_id": payout["id"],
+                    "stripe_account_id": connect["stripe_account_id"],
+                }
+            except stripe_sdk.error.StripeError as se:
+                logger.error(f"Stripe payout error: {se}")
+                raise HTTPException(status_code=502, detail=f"Stripe payout failed: {str(se.user_message or se)}")
         
         await db.withdrawals.update_one(
             {"withdrawal_id": withdrawal_id},
             {"$set": {
                 "status": "completed",
                 "approved_by": user["user_id"],
-                "approved_at": datetime.now(timezone.utc)
+                "approved_at": datetime.now(timezone.utc),
+                "payout_info": payout_info,
             }}
         )
         
@@ -2486,14 +2527,16 @@ async def approve_withdrawal(withdrawal_id: str, user: dict = Depends(get_curren
             "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
             "user_id": wd["user_id"],
             "type": "withdrawal",
-            "message": f"Your withdrawal of ${wd['amount']:.2f} has been approved!",
+            "message": f"Your withdrawal of ${wd['amount']:.2f} has been approved!" + (" Payout on its way." if payout_info["method"] == "stripe_connect" else ""),
             "data": {"withdrawal_id": withdrawal_id},
             "read": False,
             "created_at": datetime.now(timezone.utc)
         })
         
-        return {"message": "Withdrawal approved", "withdrawal_id": withdrawal_id}
+        return {"message": "Withdrawal approved", "withdrawal_id": withdrawal_id, "payout_info": payout_info}
     
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Withdrawal approval error: {e}")
         raise HTTPException(status_code=500, detail="Failed to process withdrawal")
@@ -2663,6 +2706,514 @@ async def get_stream_recordings(stream_id: str):
         {"stream_id": stream_id}, {"_id": 0}
     ).sort("created_at", -1).to_list(20)
     return recordings
+
+# ============= STRIPE CONNECT (AUTOMATED PAYOUTS) =============
+
+@api_router.get("/my/stripe-connect/status")
+async def get_my_stripe_connect_status(user: dict = Depends(get_current_user)):
+    """Returns current Stripe Connect account status for a streamer."""
+    account = await db.stripe_connect_accounts.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not account:
+        return {"connected": False, "verification_status": "not_started"}
+    
+    # Try to refresh status from Stripe
+    try:
+        acc = stripe_sdk.Account.retrieve(account["stripe_account_id"])
+        caps = acc.get("capabilities", {})
+        req = acc.get("requirements", {}) or {}
+        currently_due = req.get("currently_due", []) or []
+        transfers_active = caps.get("transfers") == "active"
+        payouts_active = bool(acc.get("payouts_enabled"))
+        charges_active = bool(acc.get("charges_enabled"))
+        verified = not currently_due and transfers_active and payouts_active
+        
+        new_status = "verified" if verified else ("pending" if not currently_due else "action_required")
+        await db.stripe_connect_accounts.update_one(
+            {"user_id": user["user_id"]},
+            {"$set": {
+                "verification_status": new_status,
+                "payouts_enabled": payouts_active,
+                "charges_enabled": charges_active,
+                "currently_due": currently_due,
+                "updated_at": datetime.now(timezone.utc),
+            }}
+        )
+        
+        return {
+            "connected": True,
+            "stripe_account_id": account["stripe_account_id"],
+            "verification_status": new_status,
+            "payouts_enabled": payouts_active,
+            "charges_enabled": charges_active,
+            "currently_due": currently_due,
+            "bank_last4": account.get("bank_last4"),
+            "country": account.get("country", "US"),
+            "holder_name": account.get("holder_name"),
+        }
+    except Exception as e:
+        logger.warning(f"Stripe account retrieve failed: {e}")
+        return {
+            "connected": True,
+            "stripe_account_id": account["stripe_account_id"],
+            "verification_status": account.get("verification_status", "pending"),
+            "payouts_enabled": account.get("payouts_enabled", False),
+            "charges_enabled": account.get("charges_enabled", False),
+            "currently_due": account.get("currently_due", []),
+            "bank_last4": account.get("bank_last4"),
+            "country": account.get("country", "US"),
+            "holder_name": account.get("holder_name"),
+            "error": "Could not sync with Stripe — showing cached status.",
+        }
+
+
+@api_router.post("/my/stripe-connect/create")
+async def create_my_stripe_connect(request: Request, user: dict = Depends(get_current_user)):
+    """Creates (or updates) a Stripe Connect Custom account + attached bank account for the current user."""
+    body = await request.json()
+    
+    first_name = str(body.get("first_name", "")).strip()
+    last_name = str(body.get("last_name", "")).strip()
+    dob = str(body.get("dob", "")).strip()  # YYYY-MM-DD
+    country = str(body.get("country", "US")).strip().upper()
+    currency = str(body.get("currency", "usd")).lower()
+    address_line1 = str(body.get("address_line1", "")).strip()
+    city = str(body.get("city", "")).strip()
+    state = str(body.get("state", "")).strip()
+    postal_code = str(body.get("postal_code", "")).strip()
+    phone = str(body.get("phone", "")).strip()
+    routing_number = str(body.get("routing_number", "")).strip()
+    account_number = str(body.get("account_number", "")).strip()
+    holder_name = str(body.get("holder_name", "")).strip() or f"{first_name} {last_name}".strip()
+    tos_accepted = bool(body.get("tos_accepted", False))
+    
+    if not (first_name and last_name and dob and address_line1 and city and postal_code and account_number):
+        raise HTTPException(status_code=400, detail="Missing required fields")
+    if not tos_accepted:
+        raise HTTPException(status_code=400, detail="You must accept the Stripe Services Agreement")
+    
+    try:
+        dob_parts = dob.split("-")
+        dob_dict = {"year": int(dob_parts[0]), "month": int(dob_parts[1]), "day": int(dob_parts[2])}
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid date of birth (use YYYY-MM-DD)")
+    
+    existing = await db.stripe_connect_accounts.find_one({"user_id": user["user_id"]})
+    
+    try:
+        if existing:
+            # Update existing account
+            acc = stripe_sdk.Account.modify(
+                existing["stripe_account_id"],
+                individual={
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "email": user.get("email"),
+                    "dob": dob_dict,
+                    "phone": phone or None,
+                    "address": {
+                        "line1": address_line1,
+                        "city": city,
+                        "state": state,
+                        "postal_code": postal_code,
+                        "country": country,
+                    },
+                },
+                tos_acceptance={
+                    "date": int(datetime.now(timezone.utc).timestamp()),
+                    "ip": request.client.host if request.client else "0.0.0.0",
+                },
+                business_profile={
+                    "mcc": "7299",  # Services - other
+                    "product_description": "Live streaming content creator on StreamVault",
+                    "url": os.environ.get("FRONTEND_URL", "https://streamvault.com"),
+                },
+            )
+            stripe_account_id = acc["id"]
+        else:
+            acc = stripe_sdk.Account.create(
+                type="custom",
+                country=country,
+                email=user.get("email"),
+                capabilities={
+                    "transfers": {"requested": True},
+                    "card_payments": {"requested": True},
+                },
+                business_type="individual",
+                individual={
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "email": user.get("email"),
+                    "dob": dob_dict,
+                    "phone": phone or None,
+                    "address": {
+                        "line1": address_line1,
+                        "city": city,
+                        "state": state,
+                        "postal_code": postal_code,
+                        "country": country,
+                    },
+                },
+                tos_acceptance={
+                    "date": int(datetime.now(timezone.utc).timestamp()),
+                    "ip": request.client.host if request.client else "0.0.0.0",
+                },
+                business_profile={
+                    "mcc": "7299",
+                    "product_description": "Live streaming content creator on StreamVault",
+                    "url": os.environ.get("FRONTEND_URL", "https://streamvault.com"),
+                },
+            )
+            stripe_account_id = acc["id"]
+        
+        # Create bank account token and attach as external account
+        bank_params = {
+            "country": country,
+            "currency": currency,
+            "account_holder_name": holder_name,
+            "account_holder_type": "individual",
+            "account_number": account_number,
+        }
+        # Routing number required for US/CA; for EU/UK accounts, account_number alone (IBAN) works.
+        if routing_number:
+            bank_params["routing_number"] = routing_number
+        
+        bank_token = stripe_sdk.Token.create(bank_account=bank_params)
+        stripe_sdk.Account.create_external_account(
+            stripe_account_id,
+            external_account=bank_token["id"],
+            default_for_currency=True,
+        )
+        
+        # Refresh account to get final state
+        final_acc = stripe_sdk.Account.retrieve(stripe_account_id)
+        req = final_acc.get("requirements", {}) or {}
+        currently_due = req.get("currently_due", []) or []
+        transfers_active = final_acc.get("capabilities", {}).get("transfers") == "active"
+        verified = not currently_due and transfers_active and bool(final_acc.get("payouts_enabled"))
+        
+        account_doc = {
+            "user_id": user["user_id"],
+            "stripe_account_id": stripe_account_id,
+            "country": country,
+            "currency": currency,
+            "holder_name": holder_name,
+            "bank_last4": account_number[-4:] if account_number else None,
+            "verification_status": "verified" if verified else ("pending" if not currently_due else "action_required"),
+            "payouts_enabled": bool(final_acc.get("payouts_enabled")),
+            "charges_enabled": bool(final_acc.get("charges_enabled")),
+            "currently_due": currently_due,
+            "created_at": existing.get("created_at") if existing else datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }
+        
+        await db.stripe_connect_accounts.update_one(
+            {"user_id": user["user_id"]},
+            {"$set": account_doc},
+            upsert=True,
+        )
+        
+        return {
+            "message": "Stripe Connect account saved",
+            "stripe_account_id": stripe_account_id,
+            "verification_status": account_doc["verification_status"],
+            "payouts_enabled": account_doc["payouts_enabled"],
+            "currently_due": currently_due,
+        }
+    
+    except stripe_sdk.error.StripeError as e:
+        logger.error(f"Stripe Connect error: {e}")
+        raise HTTPException(status_code=400, detail=f"Stripe error: {str(e.user_message or e)}")
+    except Exception as e:
+        logger.error(f"Connect create error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create Stripe Connect account: {str(e)}")
+
+
+@api_router.delete("/my/stripe-connect")
+async def delete_my_stripe_connect(user: dict = Depends(get_current_user)):
+    """Disconnect Stripe Connect account (does not delete on Stripe side)."""
+    await db.stripe_connect_accounts.delete_one({"user_id": user["user_id"]})
+    return {"message": "Disconnected"}
+
+
+# ============= ADMIN PAYOUT SETTINGS =============
+
+@api_router.get("/admin/payout-settings")
+async def get_payout_settings(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    cfg = await db.admin_config.find_one({"type": "payout_settings"}, {"_id": 0})
+    return cfg or {"type": "payout_settings", "automated_enabled": False, "platform_fee_percent": 0}
+
+
+@api_router.put("/admin/payout-settings")
+async def update_payout_settings(request: Request, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    body = await request.json()
+    doc = {
+        "type": "payout_settings",
+        "automated_enabled": bool(body.get("automated_enabled", False)),
+        "platform_fee_percent": float(body.get("platform_fee_percent", 0)),
+        "updated_at": datetime.now(timezone.utc),
+    }
+    await db.admin_config.update_one({"type": "payout_settings"}, {"$set": doc}, upsert=True)
+    return {"message": "Payout settings saved", **{k: v for k, v in doc.items() if k != "updated_at"}}
+
+
+# ============= AD MONETIZATION =============
+
+DEFAULT_AD_CPM = {
+    "live_pre_roll": 2.0,
+    "live_mid_roll": 3.0,
+    "vod_pre_roll": 2.0,
+    "vod_mid_roll": 2.5,
+}
+
+@api_router.get("/admin/ad-settings")
+async def admin_get_ad_settings(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    cfg = await db.admin_config.find_one({"type": "ad_settings"}, {"_id": 0})
+    if not cfg:
+        return {
+            "type": "ad_settings",
+            "enabled": False,
+            "revenue_share_percent": 70.0,
+            "cpm_rates": DEFAULT_AD_CPM,
+            "ad_slots": [],
+        }
+    return cfg
+
+
+@api_router.put("/admin/ad-settings")
+async def admin_update_ad_settings(request: Request, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    body = await request.json()
+    
+    # ad_slots: list of {slot_id, name, placement (live_pre_roll|live_mid_roll|vod_pre_roll|vod_mid_roll), ad_type (html|video|image), ad_code, image_url, video_url, click_url, duration_sec, active}
+    slots_in = body.get("ad_slots", []) or []
+    slots = []
+    for s in slots_in[:50]:
+        slots.append({
+            "slot_id": s.get("slot_id") or f"slot_{uuid.uuid4().hex[:10]}",
+            "name": str(s.get("name", ""))[:100],
+            "placement": str(s.get("placement", "live_pre_roll")),
+            "ad_type": str(s.get("ad_type", "html")),
+            "ad_code": str(s.get("ad_code", ""))[:10000],
+            "image_url": str(s.get("image_url", ""))[:500],
+            "video_url": str(s.get("video_url", ""))[:500],
+            "click_url": str(s.get("click_url", ""))[:500],
+            "duration_sec": max(1, min(60, int(s.get("duration_sec") or 15))),
+            "active": bool(s.get("active", True)),
+        })
+    
+    cpm_in = body.get("cpm_rates") or {}
+    cpm_rates = {k: max(0.0, float(cpm_in.get(k, DEFAULT_AD_CPM[k]))) for k in DEFAULT_AD_CPM}
+    
+    doc = {
+        "type": "ad_settings",
+        "enabled": bool(body.get("enabled", False)),
+        "revenue_share_percent": max(0.0, min(100.0, float(body.get("revenue_share_percent", 70.0)))),
+        "cpm_rates": cpm_rates,
+        "ad_slots": slots,
+        "updated_at": datetime.now(timezone.utc),
+    }
+    await db.admin_config.update_one({"type": "ad_settings"}, {"$set": doc}, upsert=True)
+    return {"message": "Ad settings saved", **{k: v for k, v in doc.items() if k != "updated_at"}}
+
+
+@api_router.get("/ads/active")
+async def get_active_ad(placement: str = "live_pre_roll"):
+    """Public endpoint — returns one active ad slot for the given placement. Used by players."""
+    cfg = await db.admin_config.find_one({"type": "ad_settings"}, {"_id": 0})
+    if not cfg or not cfg.get("enabled"):
+        return {"enabled": False, "ad": None}
+    
+    slots = [s for s in cfg.get("ad_slots", []) if s.get("active") and s.get("placement") == placement]
+    if not slots:
+        return {"enabled": True, "ad": None}
+    
+    # Round-robin via random
+    import random
+    slot = random.choice(slots)
+    # Return CPM so the client can display to streamer analytics if needed
+    cpm = (cfg.get("cpm_rates") or {}).get(placement, 0)
+    return {"enabled": True, "ad": slot, "cpm": cpm}
+
+
+@api_router.post("/ads/impression")
+async def record_ad_impression(request: Request, user: Optional[dict] = Depends(get_optional_user)):
+    """Record an ad impression. Streamers earn revenue_share_percent of CPM-derived cents."""
+    body = await request.json()
+    stream_id = str(body.get("stream_id", "")).strip()
+    slot_id = str(body.get("slot_id", "")).strip()
+    placement = str(body.get("placement", "live_pre_roll"))
+    
+    if not stream_id or not slot_id:
+        raise HTTPException(status_code=400, detail="stream_id and slot_id required")
+    
+    cfg = await db.admin_config.find_one({"type": "ad_settings"}, {"_id": 0})
+    if not cfg or not cfg.get("enabled"):
+        return {"credited": False}
+    
+    slot = next((s for s in cfg.get("ad_slots", []) if s.get("slot_id") == slot_id), None)
+    if not slot or not slot.get("active"):
+        return {"credited": False}
+    
+    cpm = (cfg.get("cpm_rates") or {}).get(placement, 0) or 0.0
+    revshare = float(cfg.get("revenue_share_percent", 70.0)) / 100.0
+    # One impression = CPM / 1000
+    per_impression_gross = cpm / 1000.0
+    streamer_earned = round(per_impression_gross * revshare, 6)
+    platform_earned = round(per_impression_gross - streamer_earned, 6)
+    
+    # Resolve streamer_id from stream
+    stream = await db.streams.find_one({"stream_id": stream_id}, {"_id": 0, "user_id": 1})
+    streamer_id = stream.get("user_id") if stream else None
+    
+    # Dedupe rapid-fire impressions (same viewer + slot within 30s)
+    viewer_key = user.get("user_id") if user else str(body.get("viewer_id", "")).strip()
+    if viewer_key:
+        recent = await db.ad_impressions.find_one({
+            "stream_id": stream_id,
+            "slot_id": slot_id,
+            "viewer_key": viewer_key,
+            "created_at": {"$gte": datetime.now(timezone.utc) - timedelta(seconds=30)},
+        })
+        if recent:
+            return {"credited": False, "reason": "duplicate"}
+    
+    impression_id = f"imp_{uuid.uuid4().hex[:14]}"
+    await db.ad_impressions.insert_one({
+        "impression_id": impression_id,
+        "stream_id": stream_id,
+        "streamer_id": streamer_id,
+        "slot_id": slot_id,
+        "placement": placement,
+        "cpm": cpm,
+        "streamer_earned": streamer_earned,
+        "platform_earned": platform_earned,
+        "viewer_key": viewer_key or None,
+        "created_at": datetime.now(timezone.utc),
+    })
+    return {"credited": True, "impression_id": impression_id, "streamer_earned": streamer_earned}
+
+
+@api_router.get("/my/ad-earnings")
+async def get_my_ad_earnings(user: dict = Depends(get_current_user)):
+    pipeline = [
+        {"$match": {"streamer_id": user["user_id"]}},
+        {"$group": {
+            "_id": "$placement",
+            "impressions": {"$sum": 1},
+            "earned": {"$sum": "$streamer_earned"},
+        }},
+    ]
+    rows = await db.ad_impressions.aggregate(pipeline).to_list(100)
+    total_impressions = sum(r["impressions"] for r in rows)
+    total_earned = round(sum(r["earned"] for r in rows), 2)
+    by_placement = {r["_id"]: {"impressions": r["impressions"], "earned": round(r["earned"], 2)} for r in rows}
+    return {
+        "total_impressions": total_impressions,
+        "total_earned": total_earned,
+        "by_placement": by_placement,
+    }
+
+
+@api_router.get("/admin/ad-earnings")
+async def admin_get_ad_earnings(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    total_imp = await db.ad_impressions.count_documents({})
+    pipeline = [{"$group": {
+        "_id": None,
+        "platform_earned": {"$sum": "$platform_earned"},
+        "streamer_earned": {"$sum": "$streamer_earned"},
+    }}]
+    agg = await db.ad_impressions.aggregate(pipeline).to_list(1)
+    platform_earned = round(agg[0]["platform_earned"], 2) if agg else 0.0
+    streamer_earned = round(agg[0]["streamer_earned"], 2) if agg else 0.0
+    
+    # Top streamers
+    top_pipeline = [
+        {"$group": {"_id": "$streamer_id", "impressions": {"$sum": 1}, "earned": {"$sum": "$streamer_earned"}}},
+        {"$sort": {"earned": -1}},
+        {"$limit": 10},
+    ]
+    top = await db.ad_impressions.aggregate(top_pipeline).to_list(10)
+    top_streamers = []
+    for t in top:
+        if not t.get("_id"):
+            continue
+        u = await db.users.find_one({"user_id": t["_id"]}, {"_id": 0, "username": 1, "display_name": 1})
+        top_streamers.append({
+            "user_id": t["_id"],
+            "username": u.get("username") if u else "unknown",
+            "display_name": u.get("display_name") if u else None,
+            "impressions": t["impressions"],
+            "earned": round(t["earned"], 2),
+        })
+    
+    return {
+        "total_impressions": total_imp,
+        "platform_earned": platform_earned,
+        "streamer_earned": streamer_earned,
+        "top_streamers": top_streamers,
+    }
+
+
+# ============= REVENUE ANALYTICS =============
+
+@api_router.get("/my/revenue/analytics")
+async def get_my_revenue_analytics(period: str = "daily", user: dict = Depends(get_current_user)):
+    """Aggregate donations + subscriptions + ad earnings into time-bucketed trends."""
+    now = datetime.now(timezone.utc)
+    
+    if period == "weekly":
+        start = now - timedelta(weeks=12)
+        date_fmt = "%Y-W%V"
+    elif period == "monthly":
+        start = now - timedelta(days=365)
+        date_fmt = "%Y-%m"
+    else:
+        period = "daily"
+        start = now - timedelta(days=30)
+        date_fmt = "%Y-%m-%d"
+    
+    async def bucket(collection, match_field, amount_field="amount"):
+        pipeline = [
+            {"$match": {match_field: user["user_id"], "created_at": {"$gte": start}}},
+            {"$group": {
+                "_id": {"$dateToString": {"format": date_fmt, "date": "$created_at"}},
+                "amount": {"$sum": f"${amount_field}"},
+            }},
+            {"$sort": {"_id": 1}},
+        ]
+        rows = await collection.aggregate(pipeline).to_list(500)
+        return {r["_id"]: round(r["amount"], 2) for r in rows}
+    
+    donations_map = await bucket(db.donations, "streamer_id", "amount")
+    subs_map = await bucket(db.subscriptions, "streamer_id", "amount")
+    ads_map = await bucket(db.ad_impressions, "streamer_id", "streamer_earned")
+    
+    all_keys = sorted(set(donations_map) | set(subs_map) | set(ads_map))
+    series = []
+    for k in all_keys:
+        d = donations_map.get(k, 0)
+        s = subs_map.get(k, 0)
+        a = ads_map.get(k, 0)
+        series.append({
+            "period": k,
+            "donations": round(d, 2),
+            "subscriptions": round(s, 2),
+            "ads": round(a, 2),
+            "total": round(d + s + a, 2),
+        })
+    
+    return {"period": period, "series": series}
+
 
 # Include the router
 app.include_router(api_router)

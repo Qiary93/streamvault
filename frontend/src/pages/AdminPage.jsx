@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Navigate } from 'react-router-dom';
-import { Database, Shield, Check, Trash, Eye, EyeSlash, Globe, Upload, CurrencyDollar, Clock, X as XIcon, Bank } from '@phosphor-icons/react';
+import { Database, Shield, Check, Trash, Eye, EyeSlash, Globe, Upload, CurrencyDollar, Clock, X as XIcon, Bank, ToggleRight } from '@phosphor-icons/react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import AdminMonetization from '../components/AdminMonetization';
 import { toast } from 'sonner';
 import axios from 'axios';
 
@@ -29,9 +30,12 @@ const WASABI_REGIONS = [
 function WithdrawRequests() {
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [payoutSettings, setPayoutSettings] = useState({ automated_enabled: false });
+  const [savingToggle, setSavingToggle] = useState(false);
 
   useEffect(() => {
     fetchRequests();
+    fetchPayoutSettings();
   }, []);
 
   const fetchRequests = async () => {
@@ -45,11 +49,39 @@ function WithdrawRequests() {
     }
   };
 
-  const handleApprove = async (id) => {
-    if (!window.confirm('Approve this withdrawal? Funds will need to be sent manually to the streamer.')) return;
+  const fetchPayoutSettings = async () => {
     try {
-      await axios.put(`${API}/api/admin/withdrawals/${id}/approve`, {}, { withCredentials: true });
-      toast.success('Withdrawal approved');
+      const res = await axios.get(`${API}/api/admin/payout-settings`, { withCredentials: true });
+      setPayoutSettings(res.data);
+    } catch {}
+  };
+
+  const toggleAutomated = async () => {
+    setSavingToggle(true);
+    try {
+      const next = !payoutSettings.automated_enabled;
+      await axios.put(`${API}/api/admin/payout-settings`, {
+        automated_enabled: next,
+        platform_fee_percent: payoutSettings.platform_fee_percent || 0,
+      }, { withCredentials: true });
+      setPayoutSettings(prev => ({ ...prev, automated_enabled: next }));
+      toast.success(`Automated payouts ${next ? 'ENABLED' : 'DISABLED'}`);
+    } catch (err) {
+      toast.error('Failed to update setting');
+    } finally {
+      setSavingToggle(false);
+    }
+  };
+
+  const handleApprove = async (id) => {
+    const auto = payoutSettings.automated_enabled;
+    const msg = auto
+      ? 'Approve and send automated payout via Stripe Connect? Funds will be transferred to the streamer\'s bank.'
+      : 'Approve this withdrawal? Funds will need to be sent manually to the streamer.';
+    if (!window.confirm(msg)) return;
+    try {
+      const res = await axios.put(`${API}/api/admin/withdrawals/${id}/approve`, {}, { withCredentials: true });
+      toast.success(res.data?.payout_info?.method === 'stripe_connect' ? 'Approved & payout queued via Stripe!' : 'Withdrawal approved');
       fetchRequests();
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Failed to approve');
@@ -74,12 +106,29 @@ function WithdrawRequests() {
 
   return (
     <div className="bg-[#0F0F16] border border-white/5 rounded-xl p-6 mt-6" data-testid="withdraw-requests-section">
-      <div className="flex items-center gap-3 mb-6">
-        <Bank className="w-6 h-6 text-green-400" />
-        <div>
-          <h2 className="text-lg font-semibold text-white">Withdraw Requests</h2>
-          <p className="text-sm text-[#A0A0AB]">{pending.length} pending request{pending.length !== 1 ? 's' : ''}</p>
+      <div className="flex items-center justify-between flex-wrap gap-3 mb-6">
+        <div className="flex items-center gap-3">
+          <Bank className="w-6 h-6 text-green-400" />
+          <div>
+            <h2 className="text-lg font-semibold text-white">Withdraw Requests</h2>
+            <p className="text-sm text-[#A0A0AB]">{pending.length} pending request{pending.length !== 1 ? 's' : ''}</p>
+          </div>
         </div>
+        <button
+          onClick={toggleAutomated}
+          disabled={savingToggle}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-sm transition-colors ${payoutSettings.automated_enabled ? 'bg-green-500/10 text-green-400 border border-green-500/30' : 'bg-[#1A1A24] text-[#A0A0AB] border border-white/10'}`}
+          data-testid="automated-payout-toggle"
+        >
+          <ToggleRight weight={payoutSettings.automated_enabled ? 'fill' : 'regular'} className="w-5 h-5" />
+          Automated payouts: {payoutSettings.automated_enabled ? 'ON' : 'OFF'}
+        </button>
+      </div>
+
+      <div className={`mb-4 p-3 rounded-lg text-xs ${payoutSettings.automated_enabled ? 'bg-green-500/5 border border-green-500/20 text-green-200' : 'bg-[#1A1A24] text-[#A0A0AB]'}`}>
+        {payoutSettings.automated_enabled
+          ? 'When ON: approving a withdrawal triggers an automatic Stripe Connect transfer + payout to the streamer\'s connected bank account.'
+          : 'When OFF: approved withdrawals are marked completed but you must transfer the funds manually (e.g. via IBAN bank transfer).'}
       </div>
 
       {pending.length > 0 && (
@@ -492,6 +541,9 @@ export default function AdminPage() {
           </ol>
         </div>
       </div>
+
+      {/* Monetization */}
+      <AdminMonetization />
 
       {/* Withdraw Requests */}
       <WithdrawRequests />

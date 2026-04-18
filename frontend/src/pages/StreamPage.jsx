@@ -6,6 +6,7 @@ import { Button } from '../components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import ChatBox from '../components/ChatBox';
 import { LiveKitViewer } from '../components/LiveKitPlayer';
+import AdPlayer from '../components/AdPlayer';
 import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'sonner';
 import axios from 'axios';
@@ -185,6 +186,9 @@ export default function StreamPage() {
       <div className="lg:col-span-9 flex flex-col overflow-y-auto">
         {/* Video Player - LiveKit */}
         <div className="relative aspect-video bg-black group" data-testid="video-player" id="stream-player-container">
+          {adPlaying && stream.is_live && (
+            <AdPlayer streamId={stream.stream_id} placement="live_pre_roll" onFinish={() => setAdPlaying(false)} />
+          )}
           {stream.is_live ? (
             <LiveKitViewer 
               roomName={stream.room_name || `stream_${stream.stream_id}`} 

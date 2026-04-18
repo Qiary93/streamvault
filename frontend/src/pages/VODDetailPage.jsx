@@ -4,6 +4,7 @@ import { Play, Clock, Eye, ArrowLeft, Users } from '@phosphor-icons/react';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { ScrollArea } from '../components/ui/scroll-area';
 import axios from 'axios';
+import AdPlayer from '../components/AdPlayer';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -33,6 +34,7 @@ export default function VODDetailPage() {
   const { streamId } = useParams();
   const [vod, setVod] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [adPlaying, setAdPlaying] = useState(true);
 
   useEffect(() => {
     const fetchVod = async () => {
@@ -70,6 +72,9 @@ export default function VODDetailPage() {
       <div className="lg:col-span-9 flex flex-col overflow-y-auto">
         {/* Video Area */}
         <div className="relative aspect-video bg-black">
+          {adPlaying && (
+            <AdPlayer streamId={vod.stream_id || streamId} placement="vod_pre_roll" onFinish={() => setAdPlaying(false)} />
+          )}
           {vod.thumbnail_url ? (
             <img src={vod.thumbnail_url} alt={vod.title} className="w-full h-full object-cover opacity-60" />
           ) : (
