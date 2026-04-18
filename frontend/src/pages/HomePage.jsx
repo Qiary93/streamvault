@@ -17,7 +17,7 @@ export default function HomePage() {
     const fetchData = async () => {
       try {
         const [categoriesRes, streamsRes] = await Promise.all([
-          axios.get(`${API}/api/categories`),
+          axios.get(`${API}/api/categories?popular=true&limit=12`),
           axios.get(`${API}/api/streams?limit=20`)
         ]);
         setAllCategories(categoriesRes.data);
@@ -65,17 +65,17 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Browse Categories */}
+      {/* Top 12 Popular Categories */}
       {allCategories.length > 0 && (
         <section data-testid="categories-section">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl lg:text-2xl font-bold text-white font-['Outfit']">Browse Categories</h2>
+            <h2 className="text-xl lg:text-2xl font-bold text-white font-['Outfit']">Top 12 Popular Categories</h2>
             <Link to="/browse" className="text-[#00E5FF] text-sm hover:underline flex items-center gap-1">
               View all <ArrowRight className="w-4 h-4" />
             </Link>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
-            {allCategories.map((category) => (
+            {allCategories.slice(0, 12).map((category) => (
               <CategoryCard key={category.category_id} category={category} />
             ))}
           </div>

@@ -12,6 +12,8 @@ import RevenueSection from '../components/RevenueSection';
 import RevenueAnalyticsChart from '../components/RevenueAnalyticsChart';
 import StripeConnectSection from '../components/StripeConnectSection';
 import MonetizationSection from '../components/MonetizationSection';
+import EmojiUploadSection from '../components/EmojiUploadSection';
+import ChatSettingsSection from '../components/ChatSettingsSection';
 import { toast } from 'sonner';
 import axios from 'axios';
 
@@ -633,6 +635,12 @@ export default function DashboardPage() {
 
       {/* Subscription Tiers Settings */}
       <SubscriptionTiersSettings />
+
+      {/* Chat Settings */}
+      <ChatSettingsSection />
+
+      {/* Emoji Upload */}
+      <EmojiUploadSection />
 
       {/* Monetization (Ad earnings) */}
       <MonetizationSection />

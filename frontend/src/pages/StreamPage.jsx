@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Eye, Users, Heart, HeartBreak, CurrencyDollar, Share, Star, SpeakerHigh, SpeakerLow, SpeakerX, CornersOut, Gear } from '@phosphor-icons/react';
+import { Eye, Users, Heart, HeartBreak, CurrencyDollar, Share, Star, SpeakerHigh, SpeakerLow, SpeakerX, CornersOut, Gear, PictureInPicture, Scissors, FrameCorners } from '@phosphor-icons/react';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Button } from '../components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
@@ -41,6 +41,8 @@ export default function StreamPage() {
   const [customDonationAmount, setCustomDonationAmount] = useState('');
   const [streamerTiers, setStreamerTiers] = useState([]);
   const [adPlaying, setAdPlaying] = useState(true);
+  const [theatreMode, setTheatreMode] = useState(false);
+  const [clipping, setClipping] = useState(false);
 
   useEffect(() => {
     const fetchStream = async () => {
@@ -143,6 +145,72 @@ export default function StreamPage() {
     toast.success('Link copied to clipboard!');
   };
 
+  // Picture-in-Picture
+  const togglePiP = async () => {
+    try {
+      const video = document.querySelector('#stream-player-container video');
+      if (!video) { toast.error('Video not ready yet'); return; }
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      } else if (document.pictureInPictureEnabled) {
+        await video.requestPictureInPicture();
+      } else {
+        toast.error('Picture-in-Picture is not supported in this browser');
+      }
+    } catch (err) {
+      toast.error('Could not enter Picture-in-Picture');
+    }
+  };
+
+  // Theatre mode
+  const toggleTheatre = () => setTheatreMode(prev => !prev);
+
+  // Clip: capture current frame + create clip record
+  const handleClip = async () => {
+    if (clipping) return;
+    setClipping(true);
+    try {
+      const video = document.querySelector('#stream-player-container video');
+      let thumbDataUrl = '';
+      if (video && video.videoWidth > 0) {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.min(640, video.videoWidth);
+          canvas.height = Math.round(canvas.width * (video.videoHeight / video.videoWidth));
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          thumbDataUrl = canvas.toDataURL('image/jpeg', 0.7);
+        } catch {}
+      }
+      const title = prompt('Give your clip a title:') || `${stream.title} — clip`;
+      const res = await axios.post(`${API}/api/streams/${stream.stream_id}/clip`, {
+        title,
+        timestamp: Math.floor((Date.now() - new Date(stream.started_at || Date.now()).getTime()) / 1000),
+        thumbnail_data_url: thumbDataUrl,
+      }, { withCredentials: true });
+      toast.success(`Clip saved: "${res.data.title}"`);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Could not create clip');
+    } finally {
+      setClipping(false);
+    }
+  };
+
+  // Keyboard shortcuts: c (clip), t (theatre), p (pip)
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.target && ['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
+      if (e.target && e.target.isContentEditable) return;
+      const k = e.key?.toLowerCase();
+      if (k === 'c') { e.preventDefault(); handleClip(); }
+      else if (k === 't') { e.preventDefault(); toggleTheatre(); }
+      else if (k === 'p' && (e.ctrlKey || e.metaKey) === false) { e.preventDefault(); togglePiP(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stream, clipping]);
+
   const handleSubscribe = async () => {
     if (!user) {
       toast.error('Please log in to subscribe');
@@ -182,9 +250,9 @@ export default function StreamPage() {
   }
 
   return (
-    <div className="min-h-[calc(100vh-64px)] grid grid-cols-1 lg:grid-cols-12" data-testid="stream-page">
+    <div className={`min-h-[calc(100vh-64px)] grid grid-cols-1 ${theatreMode ? '' : 'lg:grid-cols-12'}`} data-testid="stream-page">
       {/* Main Content */}
-      <div className="lg:col-span-9 flex flex-col overflow-y-auto">
+      <div className={`${theatreMode ? '' : 'lg:col-span-9'} flex flex-col overflow-y-auto`}>
         {/* Video Player - LiveKit */}
         <div className="relative aspect-video bg-black group" data-testid="video-player" id="stream-player-container">
           {adPlaying && stream.is_live && (
@@ -226,8 +294,42 @@ export default function StreamPage() {
                 </span>
               </div>
 
-              {/* Right: Volume, Quality, Fullscreen */}
+              {/* Right: Clip, PiP, Theatre, Volume, Quality, Fullscreen */}
               <div className="flex items-center gap-2">
+                {/* Clip */}
+                {stream.is_live && (
+                  <button
+                    onClick={handleClip}
+                    disabled={clipping}
+                    title="Clip (C)"
+                    className="p-1.5 rounded hover:bg-white/20 text-white transition-colors flex items-center gap-1 disabled:opacity-50"
+                    data-testid="clip-btn"
+                  >
+                    <Scissors className="w-5 h-5" />
+                    <span className="text-xs hidden sm:inline">Clip</span>
+                  </button>
+                )}
+
+                {/* Picture in Picture */}
+                <button
+                  onClick={togglePiP}
+                  title="Picture-in-Picture (P)"
+                  className="p-1.5 rounded hover:bg-white/20 text-white transition-colors"
+                  data-testid="pip-btn"
+                >
+                  <PictureInPicture className="w-5 h-5" />
+                </button>
+
+                {/* Theatre mode */}
+                <button
+                  onClick={toggleTheatre}
+                  title="Theatre mode (T)"
+                  className={`p-1.5 rounded hover:bg-white/20 transition-colors ${theatreMode ? 'text-[#00E5FF]' : 'text-white'}`}
+                  data-testid="theatre-btn"
+                >
+                  <FrameCorners className="w-5 h-5" />
+                </button>
+
                 {/* Volume */}
                 <div className="flex items-center gap-1.5 group/vol">
                   <button
@@ -535,8 +637,8 @@ export default function StreamPage() {
       </div>
 
       {/* Chat */}
-      <div className="lg:col-span-3 h-[500px] lg:h-[calc(100vh-64px)] lg:sticky lg:top-16">
-        <ChatBox streamId={streamId} />
+      <div className={`${theatreMode ? 'hidden' : 'lg:col-span-3'} h-[500px] lg:h-[calc(100vh-64px)] lg:sticky lg:top-16`}>
+        <ChatBox streamId={streamId} streamerId={stream.user_id} isSubscribed={isSubscribed} />
       </div>
     </div>
   );

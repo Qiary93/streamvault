@@ -641,12 +641,21 @@ async def get_following(user_id: str, limit: int = 20, offset: int = 0):
 # ============= CATEGORY ROUTES =============
 
 @api_router.get("/categories")
-async def get_categories():
-    categories = await db.categories.find({}, {"_id": 0}).to_list(100)
+async def get_categories(limit: Optional[int] = None, popular: bool = False):
+    """Returns categories. When popular=true, sorts by (live_stream_count, popularity). limit trims results."""
+    categories = await db.categories.find({}, {"_id": 0}).to_list(200)
     
     for cat in categories:
         count = await db.streams.count_documents({"category_id": cat["category_id"], "is_live": True, "broadcasting": True})
         cat["stream_count"] = count
+    
+    if popular:
+        categories.sort(key=lambda c: (c.get("stream_count", 0), c.get("popularity", 0)), reverse=True)
+    else:
+        categories.sort(key=lambda c: c.get("popularity", 0), reverse=True)
+    
+    if limit and limit > 0:
+        categories = categories[:limit]
     
     return categories
 
@@ -1506,16 +1515,56 @@ async def seed_data():
         })
         logger.info("Admin user created")
     
-    # Seed categories
+    # Seed categories — full Kick.com category list (~40)
     categories = [
-        {"category_id": "cat_gaming", "name": "Gaming", "description": "Live gaming streams", "image_url": "https://images.pexels.com/photos/9072304/pexels-photo-9072304.jpeg"},
-        {"category_id": "cat_justchatting", "name": "Just Chatting", "description": "Casual conversations and hangouts", "image_url": "https://images.pexels.com/photos/1718758/pexels-photo-1718758.jpeg"},
-        {"category_id": "cat_music", "name": "Music", "description": "Live music performances", "image_url": "https://images.pexels.com/photos/6301776/pexels-photo-6301776.jpeg"},
-        {"category_id": "cat_esports", "name": "Esports", "description": "Competitive gaming tournaments", "image_url": "https://images.pexels.com/photos/14266493/pexels-photo-14266493.jpeg"},
-        {"category_id": "cat_creative", "name": "Creative", "description": "Art, crafts, and creative content", "image_url": "https://images.pexels.com/photos/3094230/pexels-photo-3094230.jpeg"},
-        {"category_id": "cat_irl", "name": "IRL", "description": "In real life streams", "image_url": "https://images.pexels.com/photos/2774556/pexels-photo-2774556.jpeg"},
-        {"category_id": "cat_sports", "name": "Sports", "description": "Sports and fitness content", "image_url": "https://images.pexels.com/photos/3621104/pexels-photo-3621104.jpeg"},
-        {"category_id": "cat_tech", "name": "Technology", "description": "Tech talks and coding", "image_url": "https://images.pexels.com/photos/546819/pexels-photo-546819.jpeg"}
+        # Top tier
+        {"category_id": "cat_just_chatting", "name": "Just Chatting", "description": "Casual conversations and hangouts", "image_url": "https://images.pexels.com/photos/1718758/pexels-photo-1718758.jpeg", "popularity": 100},
+        {"category_id": "cat_slots_casino", "name": "Slots & Casino", "description": "Live casino and slots action", "image_url": "https://images.pexels.com/photos/34480/cards-casino-gambling-poker.jpg", "popularity": 95},
+        {"category_id": "cat_gta_v", "name": "Grand Theft Auto V", "description": "GTA V gameplay and RP", "image_url": "https://images.pexels.com/photos/9072304/pexels-photo-9072304.jpeg", "popularity": 94},
+        {"category_id": "cat_league_of_legends", "name": "League of Legends", "description": "LoL matches and coaching", "image_url": "https://images.pexels.com/photos/14266493/pexels-photo-14266493.jpeg", "popularity": 93},
+        {"category_id": "cat_valorant", "name": "VALORANT", "description": "Valorant ranked and tournaments", "image_url": "https://images.pexels.com/photos/7862604/pexels-photo-7862604.jpeg", "popularity": 92},
+        {"category_id": "cat_fortnite", "name": "Fortnite", "description": "Fortnite battle royale", "image_url": "https://images.pexels.com/photos/1293261/pexels-photo-1293261.jpeg", "popularity": 91},
+        {"category_id": "cat_counter_strike", "name": "Counter-Strike 2", "description": "CS2 competitive gameplay", "image_url": "https://images.pexels.com/photos/442576/pexels-photo-442576.jpeg", "popularity": 90},
+        {"category_id": "cat_minecraft", "name": "Minecraft", "description": "Minecraft survival and creative", "image_url": "https://images.pexels.com/photos/1294020/pexels-photo-1294020.jpeg", "popularity": 88},
+        {"category_id": "cat_call_of_duty_warzone", "name": "Call of Duty: Warzone", "description": "Warzone battle royale", "image_url": "https://images.pexels.com/photos/163064/play-stone-network-networked-interactive-163064.jpeg", "popularity": 87},
+        {"category_id": "cat_world_of_warcraft", "name": "World of Warcraft", "description": "WoW raids and PvP", "image_url": "https://images.pexels.com/photos/371924/pexels-photo-371924.jpeg", "popularity": 85},
+        {"category_id": "cat_ea_fc", "name": "EA Sports FC 25", "description": "FC 25 Ultimate Team and Rivals", "image_url": "https://images.pexels.com/photos/47730/the-ball-stadion-football-the-pitch-47730.jpeg", "popularity": 84},
+        {"category_id": "cat_dota2", "name": "Dota 2", "description": "Dota 2 matches and coaching", "image_url": "https://images.pexels.com/photos/596750/pexels-photo-596750.jpeg", "popularity": 82},
+        # Mid tier
+        {"category_id": "cat_music", "name": "Music", "description": "Live music performances", "image_url": "https://images.pexels.com/photos/6301776/pexels-photo-6301776.jpeg", "popularity": 80},
+        {"category_id": "cat_irl", "name": "IRL", "description": "In real life streams", "image_url": "https://images.pexels.com/photos/2774556/pexels-photo-2774556.jpeg", "popularity": 78},
+        {"category_id": "cat_sports", "name": "Sports", "description": "Sports and live events", "image_url": "https://images.pexels.com/photos/3621104/pexels-photo-3621104.jpeg", "popularity": 77},
+        {"category_id": "cat_poker", "name": "Poker", "description": "Live poker and tournaments", "image_url": "https://images.pexels.com/photos/1871508/pexels-photo-1871508.jpeg", "popularity": 75},
+        {"category_id": "cat_hot_tubs", "name": "Hot Tubs", "description": "Pools, hot tubs and beaches", "image_url": "https://images.pexels.com/photos/261403/pexels-photo-261403.jpeg", "popularity": 72},
+        {"category_id": "cat_esports", "name": "Esports", "description": "Competitive gaming tournaments", "image_url": "https://images.pexels.com/photos/7915437/pexels-photo-7915437.jpeg", "popularity": 70},
+        {"category_id": "cat_chess", "name": "Chess", "description": "Chess games and tournaments", "image_url": "https://images.pexels.com/photos/260024/pexels-photo-260024.jpeg", "popularity": 68},
+        {"category_id": "cat_pools_camping", "name": "Travel & Outdoors", "description": "Travel, camping, and outdoors", "image_url": "https://images.pexels.com/photos/2422265/pexels-photo-2422265.jpeg", "popularity": 66},
+        {"category_id": "cat_creative", "name": "Creative", "description": "Art, crafts, and creative content", "image_url": "https://images.pexels.com/photos/3094230/pexels-photo-3094230.jpeg", "popularity": 65},
+        {"category_id": "cat_tech", "name": "Science & Technology", "description": "Tech talks, coding, and science", "image_url": "https://images.pexels.com/photos/546819/pexels-photo-546819.jpeg", "popularity": 64},
+        {"category_id": "cat_food_drink", "name": "Food & Drink", "description": "Cooking and tasting streams", "image_url": "https://images.pexels.com/photos/1640777/pexels-photo-1640777.jpeg", "popularity": 62},
+        {"category_id": "cat_makers", "name": "Makers & Crafting", "description": "DIY, woodworking and handcrafts", "image_url": "https://images.pexels.com/photos/3965545/pexels-photo-3965545.jpeg", "popularity": 60},
+        # Additional games / niches
+        {"category_id": "cat_apex_legends", "name": "Apex Legends", "description": "Apex Legends ranked", "image_url": "https://images.pexels.com/photos/2007647/pexels-photo-2007647.jpeg", "popularity": 58},
+        {"category_id": "cat_rocket_league", "name": "Rocket League", "description": "Rocket League ranked and tournaments", "image_url": "https://images.pexels.com/photos/1093646/pexels-photo-1093646.jpeg", "popularity": 55},
+        {"category_id": "cat_rust", "name": "Rust", "description": "Rust survival gameplay", "image_url": "https://images.pexels.com/photos/2801278/pexels-photo-2801278.jpeg", "popularity": 54},
+        {"category_id": "cat_overwatch_2", "name": "Overwatch 2", "description": "Overwatch 2 ranked and arcade", "image_url": "https://images.pexels.com/photos/442576/pexels-photo-442576.jpeg", "popularity": 52},
+        {"category_id": "cat_elden_ring", "name": "Elden Ring", "description": "Elden Ring PvE and PvP", "image_url": "https://images.pexels.com/photos/371924/pexels-photo-371924.jpeg", "popularity": 50},
+        {"category_id": "cat_pokemon", "name": "Pokémon", "description": "Pokémon games and cards", "image_url": "https://images.pexels.com/photos/163064/play-stone-network-networked-interactive-163064.jpeg", "popularity": 48},
+        {"category_id": "cat_dark_and_darker", "name": "Dark and Darker", "description": "Dark and Darker dungeons", "image_url": "https://images.pexels.com/photos/163407/pexels-photo-163407.jpeg", "popularity": 46},
+        {"category_id": "cat_marvel_rivals", "name": "Marvel Rivals", "description": "Marvel Rivals competitive", "image_url": "https://images.pexels.com/photos/9072304/pexels-photo-9072304.jpeg", "popularity": 44},
+        {"category_id": "cat_pubg", "name": "PUBG: Battlegrounds", "description": "PUBG battle royale", "image_url": "https://images.pexels.com/photos/1293261/pexels-photo-1293261.jpeg", "popularity": 42},
+        {"category_id": "cat_tarkov", "name": "Escape From Tarkov", "description": "Tarkov raids", "image_url": "https://images.pexels.com/photos/163407/pexels-photo-163407.jpeg", "popularity": 40},
+        {"category_id": "cat_path_of_exile", "name": "Path of Exile", "description": "PoE ARPG gameplay", "image_url": "https://images.pexels.com/photos/371924/pexels-photo-371924.jpeg", "popularity": 38},
+        {"category_id": "cat_stellar_blade", "name": "Stellar Blade", "description": "Stellar Blade action", "image_url": "https://images.pexels.com/photos/7862604/pexels-photo-7862604.jpeg", "popularity": 36},
+        # Niche / evergreen
+        {"category_id": "cat_asmr", "name": "ASMR", "description": "Relaxing ASMR streams", "image_url": "https://images.pexels.com/photos/4041392/pexels-photo-4041392.jpeg", "popularity": 34},
+        {"category_id": "cat_talk_shows", "name": "Talk Shows & Podcasts", "description": "Live podcasts and interviews", "image_url": "https://images.pexels.com/photos/3784424/pexels-photo-3784424.jpeg", "popularity": 32},
+        {"category_id": "cat_special_events", "name": "Special Events", "description": "One-off live events", "image_url": "https://images.pexels.com/photos/270637/pexels-photo-270637.jpeg", "popularity": 30},
+        {"category_id": "cat_software", "name": "Software & Game Development", "description": "Programming live", "image_url": "https://images.pexels.com/photos/546819/pexels-photo-546819.jpeg", "popularity": 28},
+        {"category_id": "cat_crypto", "name": "Crypto", "description": "Crypto markets and news", "image_url": "https://images.pexels.com/photos/844124/pexels-photo-844124.jpeg", "popularity": 26},
+        {"category_id": "cat_pets_animals", "name": "Pets & Animals", "description": "Live pet cams and care", "image_url": "https://images.pexels.com/photos/45201/kitty-cat-kitten-pet-45201.jpeg", "popularity": 24},
+        {"category_id": "cat_fitness_health", "name": "Fitness & Health", "description": "Workouts and wellness", "image_url": "https://images.pexels.com/photos/4753986/pexels-photo-4753986.jpeg", "popularity": 22},
+        {"category_id": "cat_kick_originals", "name": "Kick Originals", "description": "Platform original programming", "image_url": "https://images.pexels.com/photos/2774556/pexels-photo-2774556.jpeg", "popularity": 20},
     ]
     
     for cat in categories:
@@ -1524,6 +1573,27 @@ async def seed_data():
             cat["viewer_count"] = 0
             cat["stream_count"] = 0
             await db.categories.insert_one(cat)
+        else:
+            # Keep image/description in sync (but not counts)
+            await db.categories.update_one(
+                {"category_id": cat["category_id"]},
+                {"$set": {
+                    "name": cat["name"],
+                    "description": cat["description"],
+                    "image_url": cat["image_url"],
+                    "popularity": cat["popularity"],
+                }}
+            )
+    
+    # Remove stale categories not in the canonical seed list
+    canonical_ids = [c["category_id"] for c in categories]
+    stale_cats = await db.categories.find({"category_id": {"$nin": canonical_ids}}, {"_id": 0, "category_id": 1}).to_list(50)
+    if stale_cats:
+        stale_ids = [c["category_id"] for c in stale_cats]
+        # Migrate any streams using stale categories to Just Chatting
+        await db.streams.update_many({"category_id": {"$in": stale_ids}}, {"$set": {"category_id": "cat_just_chatting"}})
+        await db.categories.delete_many({"category_id": {"$in": stale_ids}})
+        logger.info(f"Removed {len(stale_ids)} stale categories")
     
     logger.info("Categories seeded")
     
@@ -3213,6 +3283,305 @@ async def get_my_revenue_analytics(period: str = "daily", user: dict = Depends(g
         })
     
     return {"period": period, "series": series}
+
+
+# ============= SUBSCRIBER EMOTES (built-in blue set, 20) =============
+
+SUBSCRIBER_EMOTES = [
+    {"code": ":svBlueFire:",   "name": "Blue Fire",    "url": "https://api.iconify.design/twemoji:fire.svg?color=%2300A3FF"},
+    {"code": ":svBlueHeart:",  "name": "Blue Heart",   "url": "https://api.iconify.design/twemoji:blue-heart.svg"},
+    {"code": ":svBlueStar:",   "name": "Blue Star",    "url": "https://api.iconify.design/twemoji:star.svg?color=%2300A3FF"},
+    {"code": ":svBlueHype:",   "name": "Blue Hype",    "url": "https://api.iconify.design/twemoji:rocket.svg?color=%2300A3FF"},
+    {"code": ":svBlueLaugh:",  "name": "Blue Laugh",   "url": "https://api.iconify.design/twemoji:face-with-tears-of-joy.svg?color=%2300A3FF"},
+    {"code": ":svBlueCry:",    "name": "Blue Cry",     "url": "https://api.iconify.design/twemoji:loudly-crying-face.svg?color=%2300A3FF"},
+    {"code": ":svBlueCool:",   "name": "Blue Cool",    "url": "https://api.iconify.design/twemoji:smiling-face-with-sunglasses.svg?color=%2300A3FF"},
+    {"code": ":svBlueLove:",   "name": "Blue Love",    "url": "https://api.iconify.design/twemoji:smiling-face-with-heart-eyes.svg?color=%2300A3FF"},
+    {"code": ":svBlueClap:",   "name": "Blue Clap",    "url": "https://api.iconify.design/twemoji:clapping-hands.svg?color=%2300A3FF"},
+    {"code": ":svBlueWave:",   "name": "Blue Wave",    "url": "https://api.iconify.design/twemoji:waving-hand.svg?color=%2300A3FF"},
+    {"code": ":svBlueCrown:",  "name": "Blue Crown",   "url": "https://api.iconify.design/twemoji:crown.svg?color=%2300A3FF"},
+    {"code": ":svBlueGem:",    "name": "Blue Gem",     "url": "https://api.iconify.design/twemoji:gem-stone.svg?color=%2300A3FF"},
+    {"code": ":svBlueThink:",  "name": "Blue Think",   "url": "https://api.iconify.design/twemoji:thinking-face.svg?color=%2300A3FF"},
+    {"code": ":svBlueShock:",  "name": "Blue Shock",   "url": "https://api.iconify.design/twemoji:face-with-open-mouth.svg?color=%2300A3FF"},
+    {"code": ":svBlueRage:",   "name": "Blue Rage",    "url": "https://api.iconify.design/twemoji:angry-face.svg?color=%2300A3FF"},
+    {"code": ":svBlueSkull:",  "name": "Blue Skull",   "url": "https://api.iconify.design/twemoji:skull.svg?color=%2300A3FF"},
+    {"code": ":svBlueKiss:",   "name": "Blue Kiss",    "url": "https://api.iconify.design/twemoji:kissing-face-with-smiling-eyes.svg?color=%2300A3FF"},
+    {"code": ":svBluePartying:","name": "Blue Party",   "url": "https://api.iconify.design/twemoji:partying-face.svg?color=%2300A3FF"},
+    {"code": ":svBlueCheck:",  "name": "Blue Check",   "url": "https://api.iconify.design/twemoji:check-mark-button.svg?color=%2300A3FF"},
+    {"code": ":svBlueLightning:","name": "Blue Bolt",   "url": "https://api.iconify.design/twemoji:high-voltage.svg?color=%2300A3FF"},
+]
+
+
+@api_router.get("/emotes/subscriber")
+async def get_subscriber_emotes():
+    """Built-in 20 blue emotes (subscriber-only across platform)."""
+    return SUBSCRIBER_EMOTES
+
+
+# ============= STREAMER CUSTOM EMOTES =============
+
+@api_router.get("/my/emotes")
+async def get_my_emotes(user: dict = Depends(get_current_user)):
+    emotes = await db.streamer_emotes.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", 1).to_list(50)
+    return emotes
+
+
+@api_router.get("/users/{user_id}/emotes")
+async def get_user_emotes(user_id: str):
+    """Public — returns emotes for a streamer (subscribers_only enforced client-side)."""
+    emotes = await db.streamer_emotes.find({"user_id": user_id}, {"_id": 0}).sort("created_at", 1).to_list(50)
+    return emotes
+
+
+@api_router.post("/my/emotes")
+async def upload_my_emote(
+    file: UploadFile = File(...),
+    code: str = "",
+    subscribers_only: bool = False,
+    user: dict = Depends(get_current_user),
+):
+    """Upload one emote. Max 20 per streamer. subscribers_only flag per emote."""
+    count = await db.streamer_emotes.count_documents({"user_id": user["user_id"]})
+    if count >= 20:
+        raise HTTPException(status_code=400, detail="Maximum 20 emotes per streamer")
+    
+    code = (code or "").strip()
+    if not code or not code.startswith(":") or not code.endswith(":") or len(code) < 3 or len(code) > 30:
+        raise HTTPException(status_code=400, detail="Emote code must be formatted like :myEmote: (3–30 chars)")
+    
+    existing = await db.streamer_emotes.find_one({"user_id": user["user_id"], "code": code})
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Emote code {code} already used")
+    
+    content = await file.read()
+    if len(content) > 512 * 1024:
+        raise HTTPException(status_code=400, detail="Emote must be ≤ 512KB")
+    
+    content_type = file.content_type or "image/png"
+    ext = content_type.split("/")[-1]
+    emote_id = f"emt_{uuid.uuid4().hex[:12]}"
+    path = f"emotes/{user['user_id']}/{emote_id}.{ext}"
+    put_object(path, content, content_type)
+    
+    doc = {
+        "emote_id": emote_id,
+        "user_id": user["user_id"],
+        "code": code,
+        "url": f"/api/files/{path}",
+        "subscribers_only": bool(subscribers_only),
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.streamer_emotes.insert_one(doc)
+    return {k: (v.isoformat() if k == "created_at" else v) for k, v in doc.items() if k != "_id"}
+
+
+@api_router.put("/my/emotes/{emote_id}")
+async def update_my_emote(emote_id: str, request: Request, user: dict = Depends(get_current_user)):
+    body = await request.json()
+    patch = {}
+    if "subscribers_only" in body:
+        patch["subscribers_only"] = bool(body["subscribers_only"])
+    if "code" in body:
+        code = str(body["code"]).strip()
+        if not code.startswith(":") or not code.endswith(":") or len(code) < 3 or len(code) > 30:
+            raise HTTPException(status_code=400, detail="Invalid emote code")
+        patch["code"] = code
+    if not patch:
+        return {"message": "No changes"}
+    res = await db.streamer_emotes.update_one(
+        {"emote_id": emote_id, "user_id": user["user_id"]},
+        {"$set": patch}
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Emote not found")
+    return {"message": "Updated"}
+
+
+@api_router.delete("/my/emotes/{emote_id}")
+async def delete_my_emote(emote_id: str, user: dict = Depends(get_current_user)):
+    res = await db.streamer_emotes.delete_one({"emote_id": emote_id, "user_id": user["user_id"]})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Emote not found")
+    return {"message": "Deleted"}
+
+
+# ============= STREAMER CHAT SETTINGS =============
+
+@api_router.get("/my/chat-settings")
+async def get_my_chat_settings(user: dict = Depends(get_current_user)):
+    cfg = await db.chat_settings.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    return cfg or {"user_id": user["user_id"], "chat_enabled": True, "rules": ""}
+
+
+@api_router.put("/my/chat-settings")
+async def save_my_chat_settings(request: Request, user: dict = Depends(get_current_user)):
+    body = await request.json()
+    doc = {
+        "user_id": user["user_id"],
+        "chat_enabled": bool(body.get("chat_enabled", True)),
+        "rules": str(body.get("rules", ""))[:2000],
+        "updated_at": datetime.now(timezone.utc),
+    }
+    await db.chat_settings.update_one({"user_id": user["user_id"]}, {"$set": doc}, upsert=True)
+    return {"message": "Chat settings saved", **{k: v for k, v in doc.items() if k != "updated_at"}}
+
+
+@api_router.get("/users/{user_id}/chat-settings")
+async def get_user_chat_settings(user_id: str):
+    """Public — returns chat_enabled + rules for a streamer."""
+    cfg = await db.chat_settings.find_one({"user_id": user_id}, {"_id": 0})
+    return cfg or {"user_id": user_id, "chat_enabled": True, "rules": ""}
+
+
+# ============= CLIPS =============
+
+@api_router.post("/streams/{stream_id}/clip")
+async def create_clip(stream_id: str, request: Request, user: Optional[dict] = Depends(get_optional_user)):
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    title = str(body.get("title", ""))[:120] or "Untitled clip"
+    timestamp = int(body.get("timestamp", 0))  # seconds from stream start
+    thumbnail_data_url = str(body.get("thumbnail_data_url", ""))
+    
+    stream = await db.streams.find_one({"stream_id": stream_id}, {"_id": 0})
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    
+    clip_id = f"clip_{uuid.uuid4().hex[:12]}"
+    thumb_url = ""
+    
+    # Optional: save thumbnail data URL as a small asset
+    if thumbnail_data_url.startswith("data:image/"):
+        try:
+            import base64
+            header, b64 = thumbnail_data_url.split(",", 1)
+            content_type = header.split(";")[0].replace("data:", "") or "image/jpeg"
+            data = base64.b64decode(b64)
+            if len(data) <= 512 * 1024:
+                ext = content_type.split("/")[-1]
+                path = f"clips/{stream_id}/{clip_id}.{ext}"
+                put_object(path, data, content_type)
+                thumb_url = f"/api/files/{path}"
+        except Exception as e:
+            logger.warning(f"Clip thumb save failed: {e}")
+    
+    doc = {
+        "clip_id": clip_id,
+        "stream_id": stream_id,
+        "streamer_id": stream.get("user_id"),
+        "clipper_user_id": user.get("user_id") if user else None,
+        "title": title,
+        "timestamp_sec": timestamp,
+        "thumbnail_url": thumb_url,
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.clips.insert_one(doc)
+    return {k: (v.isoformat() if k == "created_at" else v) for k, v in doc.items() if k != "_id"}
+
+
+@api_router.get("/streams/{stream_id}/clips")
+async def list_stream_clips(stream_id: str, limit: int = 20):
+    clips = await db.clips.find({"stream_id": stream_id}, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    return clips
+
+
+@api_router.get("/my/clips")
+async def get_my_clips(user: dict = Depends(get_current_user), limit: int = 50):
+    clips = await db.clips.find({"streamer_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    return clips
+
+
+# ============= STRIPE CONNECT WEBHOOK =============
+
+@api_router.post("/webhook/stripe/connect")
+async def stripe_connect_webhook(request: Request):
+    """Handles account.updated, payout.paid, payout.failed events from Stripe Connect."""
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+    webhook_secret = os.environ.get("STRIPE_CONNECT_WEBHOOK_SECRET", "")
+    
+    try:
+        if webhook_secret:
+            event = stripe_sdk.Webhook.construct_event(payload, sig, webhook_secret)
+        else:
+            # No secret configured — log & parse anyway (dev mode)
+            logger.warning("STRIPE_CONNECT_WEBHOOK_SECRET not set; skipping signature check")
+            event = json.loads(payload.decode("utf-8"))
+    except stripe_sdk.error.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+    except Exception as e:
+        logger.error(f"Connect webhook parse error: {e}")
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    
+    event_type = event.get("type")
+    data_obj = (event.get("data") or {}).get("object") or {}
+    connected_account_id = event.get("account") or data_obj.get("account") or data_obj.get("id")
+    
+    try:
+        if event_type == "account.updated":
+            account_id = data_obj.get("id")
+            if account_id:
+                caps = data_obj.get("capabilities", {}) or {}
+                req = data_obj.get("requirements", {}) or {}
+                currently_due = req.get("currently_due", []) or []
+                payouts_enabled = bool(data_obj.get("payouts_enabled"))
+                charges_enabled = bool(data_obj.get("charges_enabled"))
+                verified = not currently_due and caps.get("transfers") == "active" and payouts_enabled
+                await db.stripe_connect_accounts.update_one(
+                    {"stripe_account_id": account_id},
+                    {"$set": {
+                        "payouts_enabled": payouts_enabled,
+                        "charges_enabled": charges_enabled,
+                        "currently_due": currently_due,
+                        "verification_status": "verified" if verified else ("pending" if not currently_due else "action_required"),
+                        "updated_at": datetime.now(timezone.utc),
+                    }}
+                )
+                # Notify streamer if fully verified
+                if verified:
+                    acc = await db.stripe_connect_accounts.find_one({"stripe_account_id": account_id}, {"_id": 0, "user_id": 1})
+                    if acc:
+                        await db.notifications.insert_one({
+                            "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+                            "user_id": acc["user_id"],
+                            "type": "stripe_connect",
+                            "message": "Your Stripe payout account is fully verified. Automated payouts are now possible.",
+                            "data": {"stripe_account_id": account_id},
+                            "read": False,
+                            "created_at": datetime.now(timezone.utc),
+                        })
+        
+        elif event_type in ("payout.paid", "payout.failed"):
+            payout_id = data_obj.get("id")
+            status = "paid" if event_type == "payout.paid" else "failed"
+            await db.withdrawals.update_many(
+                {"payout_info.payout_id": payout_id},
+                {"$set": {
+                    "payout_info.stripe_status": status,
+                    "payout_status_updated_at": datetime.now(timezone.utc),
+                    **({"status": "failed"} if status == "failed" else {}),
+                }}
+            )
+            wd = await db.withdrawals.find_one({"payout_info.payout_id": payout_id}, {"_id": 0, "user_id": 1, "amount": 1, "withdrawal_id": 1})
+            if wd:
+                msg = (f"Your payout of ${wd['amount']:.2f} was paid out successfully!"
+                       if status == "paid" else
+                       f"Your payout of ${wd['amount']:.2f} failed at Stripe. Please review your bank details and try again.")
+                await db.notifications.insert_one({
+                    "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+                    "user_id": wd["user_id"],
+                    "type": "withdrawal",
+                    "message": msg,
+                    "data": {"withdrawal_id": wd["withdrawal_id"]},
+                    "read": False,
+                    "created_at": datetime.now(timezone.utc),
+                })
+        else:
+            # Silently accept other Connect events (account.application.*, capability.*, etc.)
+            pass
+    except Exception as e:
+        logger.error(f"Connect webhook handle error for {event_type}: {e}")
+        # Still 200 to ack — failed DB writes will retry elsewhere
+    
+    return {"received": True, "event": event_type, "account": connected_account_id}
 
 
 # Include the router

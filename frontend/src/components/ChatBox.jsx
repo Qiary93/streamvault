@@ -24,7 +24,7 @@ function getUsernameColor(username) {
   return usernameColors[Math.abs(hash) % usernameColors.length];
 }
 
-export default function ChatBox({ streamId }) {
+export default function ChatBox({ streamId, streamerId, isSubscribed = false }) {
   const { user } = useAuth();
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
@@ -34,6 +34,30 @@ export default function ChatBox({ streamId }) {
   const reconnectTimerRef = useRef(null);
 
   const [systemMessage, setSystemMessage] = useState('');
+  const [chatSettings, setChatSettings] = useState({ chat_enabled: true, rules: '' });
+  const [rulesAccepted, setRulesAccepted] = useState(false);
+
+  // Fetch chat settings for this streamer
+  useEffect(() => {
+    if (!streamerId) return;
+    axios.get(`${API}/api/users/${streamerId}/chat-settings`)
+      .then(res => setChatSettings({ chat_enabled: res.data.chat_enabled !== false, rules: res.data.rules || '' }))
+      .catch(() => {});
+  }, [streamerId]);
+
+  // Remember rules acceptance per stream
+  useEffect(() => {
+    if (!streamId) return;
+    try {
+      const key = `sv_chat_rules_${streamId}`;
+      if (localStorage.getItem(key) === '1') setRulesAccepted(true);
+    } catch {}
+  }, [streamId]);
+
+  const acceptRules = () => {
+    setRulesAccepted(true);
+    try { localStorage.setItem(`sv_chat_rules_${streamId}`, '1'); } catch {}
+  };
 
   // Fetch initial messages via REST
   useEffect(() => {
@@ -166,7 +190,38 @@ export default function ChatBox({ streamId }) {
   };
 
   return (
-    <div className="h-full flex flex-col bg-[#0F0F16] border-l border-white/5" data-testid="chat-box">
+    <div className="h-full flex flex-col bg-[#0F0F16] border-l border-white/5 relative" data-testid="chat-box">
+      {/* Chat disabled overlay */}
+      {!chatSettings.chat_enabled && (
+        <div className="absolute inset-0 z-20 bg-[#0F0F16]/95 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center" data-testid="chat-disabled-overlay">
+          <div className="w-14 h-14 rounded-full bg-[#1A1A24] flex items-center justify-center mb-3">
+            <span className="text-2xl">💬</span>
+          </div>
+          <h3 className="text-white font-semibold mb-1">Chat is disabled</h3>
+          <p className="text-sm text-[#A0A0AB]">The streamer has turned off chat for this stream.</p>
+        </div>
+      )}
+
+      {/* Rules gate overlay */}
+      {chatSettings.chat_enabled && chatSettings.rules && !rulesAccepted && (
+        <div className="absolute inset-0 z-20 bg-[#0F0F16]/95 backdrop-blur-sm flex flex-col p-4" data-testid="chat-rules-overlay">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-xl">📜</span>
+            <h3 className="font-semibold text-white">Chat rules</h3>
+          </div>
+          <div className="flex-1 overflow-y-auto bg-[#1A1A24] rounded-lg p-4 mb-3 text-sm text-[#A0A0AB] whitespace-pre-wrap" data-testid="chat-rules-content">
+            {chatSettings.rules}
+          </div>
+          <Button
+            onClick={acceptRules}
+            className="w-full bg-[#00E5FF] text-black hover:bg-[#00B3CC] font-bold"
+            data-testid="chat-rules-accept-btn"
+          >
+            I accept the rules
+          </Button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="h-12 flex items-center justify-between px-4 border-b border-white/5">
         <div className="flex items-center gap-2">
@@ -233,7 +288,11 @@ export default function ChatBox({ streamId }) {
       <div className="p-3 border-t border-white/5">
         {user ? (
           <form onSubmit={handleSendMessage} className="flex items-center gap-1.5">
-            <ChatEmojiPicker onSelect={(emoji) => setNewMessage(prev => prev + emoji)} />
+            <ChatEmojiPicker
+              onSelect={(emoji) => setNewMessage(prev => prev + emoji)}
+              streamerId={streamerId}
+              isSubscribed={isSubscribed}
+            />
             <input
               type="text"
               placeholder="Send a message..."

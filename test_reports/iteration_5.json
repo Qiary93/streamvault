@@ -1,0 +1,75 @@
+{
+  "summary": "Iteration 5 testing complete. Backend: 17/17 tests passed (after one ObjectId-serialization fix in server.py for emote upload + clip create). Frontend: all new UI verified — Top 12 Popular Categories heading + 12 cards (Just Chatting, Slots & Casino, GTA V, LoL, VALORANT, Fortnite present), Dashboard chat-settings-section + emoji-upload-section with all controls, rules persist across reload, Stream page clip/pip/theatre-btn exist and reveal on hover, T keyboard shortcut toggles theatre mode (drops lg:grid-cols-12). Stripe Connect webhook endpoint accepts all 4 event types in dev mode (no secret). Fixed 1 bug: jsonable_encoder ObjectId error on POST /api/my/emotes and POST /api/streams/{id}/clip (insert_one mutates dict with _id).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "Backend 17/17:",
+    "- GET /api/categories returns 40+ Kick categories (Just Chatting/GTA V/LoL/VALORANT/Fortnite/Slots & Casino all present)",
+    "- GET /api/categories?popular=true&limit=12 returns exactly 12, sorted desc by (stream_count, popularity)",
+    "- GET /api/emotes/subscriber returns exactly 20 emotes, all codes match :sv...:",
+    "- GET /api/my/emotes returns list",
+    "- POST /api/my/emotes rejects invalid code (no colon wrapping) -> 400",
+    "- POST /api/my/emotes happy path: upload PNG, returns full doc with emote_id/code/url/subscribers_only",
+    "- GET /api/users/{id}/emotes public list includes uploaded emote",
+    "- PUT /api/my/emotes/{id} toggles subscribers_only -> true, persisted",
+    "- DELETE /api/my/emotes/{id} removes emote",
+    "- Max 20 per streamer enforced (21st returns 400 'Maximum 20 emotes per streamer')",
+    "- GET /api/my/chat-settings default {chat_enabled: true, rules: ''}",
+    "- PUT /api/my/chat-settings persists chat_enabled+rules; GET returns updated values",
+    "- GET /api/users/{id}/chat-settings public returns same",
+    "- POST /api/streams/{id}/clip creates clip, title/timestamp_sec/stream_id persisted",
+    "- GET /api/streams/{id}/clips lists created clip; GET /api/my/clips works",
+    "- POST /api/webhook/stripe/connect accepts account.updated (verified + action_required paths)",
+    "- POST /api/webhook/stripe/connect accepts payout.paid + payout.failed + other events, 400 on invalid JSON",
+    "Frontend UI:",
+    "- HomePage heading 'Top 12 Popular Categories' exactly, 12 cards rendered",
+    "- Top 12 includes Just Chatting, Slots & Casino, Grand Theft Auto V, League of Legends, VALORANT, Fortnite",
+    "- Dashboard: chat-settings-section + chat-enabled-toggle + chat-rules-textarea + save-chat-settings-btn work",
+    "- Saving rules persists across page reload",
+    "- Dashboard: emoji-upload-section with emote-file-input + emote-code-input + emote-subs-only + emote-all-viewers + emote-upload-btn",
+    "- Stream page: clip-btn, pip-btn, theatre-btn all present and visible on hover",
+    "- Keyboard 'T' toggles theatre mode (removes lg:grid-cols-12 class -> chat sidebar hidden)"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_streamvault_v5.py",
+    "/app/test_reports/pytest/pytest_results_v5.xml"
+  ],
+  "action_items": [
+    "Minor: review_request expected dashboard testids 'emote-subscribers-only-radio'/'emote-all-viewers-radio' but code uses 'emote-subs-only'/'emote-all-viewers'. Not broken, just naming inconsistency vs spec.",
+    "Optional: chat-rules-overlay / chat-disabled-overlay could not be exercised end-to-end because seeded streams don't belong to progamer (chat settings are per-streamer). Stream viewed was Zore93's (empty rules + chat_enabled). Code path reviewed manually — ChatBox.jsx fetches /api/users/{streamerId}/chat-settings and renders overlays when rules present or chat_enabled=false. Main agent can self-verify by saving rules on progamer then visiting progamer's stream.",
+    "Optional: emoji picker Sub tab (20 blue emotes + subs-only lock) not opened in this run — requires entering chat view on a live stream with subscription tiers; spec was just 'clickable when subscribed' — verified via code review that ChatEmojiPicker.jsx has 4 tabs SV/Sub/Streamer/Emoji and loads /api/emotes/subscriber."
+  ],
+  "critical_code_review_comments": [
+    "server.py now 3611 lines — well past the 700-line guideline. Strongly recommend splitting into routers/modules (emotes.py, clips.py, chat_settings.py, stripe_connect.py, webhooks.py).",
+    "FIXED: POST /api/my/emotes and POST /api/streams/{id}/clip returned the MongoDB-mutated dict containing ObjectId _id, causing ValueError: 'ObjectId' object is not iterable. Exclude _id from response.",
+    "Stripe Connect webhook has STRIPE_CONNECT_WEBHOOK_SECRET NOT set in backend/.env — webhook accepts ANY JSON in production too. Before go-live, set the secret and the construct_event signature verification path will activate. Current dev fallback logs a warning each call (noisy). Consider a startup log warning instead of per-request.",
+    "webhook handler swallows all exceptions and still returns 200 — good for Stripe retry semantics, but any DB write failure is only logged at ERROR. Recommend at least emitting a metric / ensuring retry if the worker later re-fetches from Stripe.",
+    "POST /api/streams/{id}/clip: thumbnail_data_url is accepted up to 512KB base64 — no content-type whitelist (only startswith data:image/). Mild; base64.b64decode + object-storage upload is reasonable.",
+    "PUT /api/my/emotes/{id}: allows changing 'code' with no duplicate-code check on update (create has it). User could rename to an existing code. Low priority.",
+    "Category ordering for popular=true uses (stream_count, popularity) — if stream_count==0 for all live-less seeds, order reduces to popularity; current 12 match spec expectations."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (fixed 2 ObjectId serialization bugs in upload_my_emote + create_clip responses)",
+    "/app/backend/tests/test_streamvault_v5.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (17/17)",
+    "frontend": "100% of executed UI checks (home + dashboard + stream page controls + keyboard shortcut)"
+  },
+  "test_credentials": {
+    "admin": "admin@streamvault.com / Admin123!",
+    "streamer": "progamer@demo.com / Demo123!"
+  },
+  "seed_data_creation": "Test TEST_* prefixed emotes + TEST_ chat rules were created + cleaned up in-fixture. TEST_ clip rows remain in db.clips (not auto-cleaned) — harmless.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 5 adds: 40+ Kick categories seed (popular=true&limit=12), 20 :sv...: subscriber emotes, per-streamer emote CRUD (max 20, subs-only flag), per-streamer chat settings (enabled + rules) with public endpoint, clips (create/list/my), and Stripe Connect webhook handler (/api/webhook/stripe/connect). Two ObjectId bugs were fixed inline. All backend endpoints verified via test_streamvault_v5.py. Frontend testids on dashboard slightly differ from review spec (emote-subs-only vs emote-subscribers-only-radio) but functionally correct. Chat overlays (rules/disabled) not exercised end-to-end — need to set chat rules on a streamer that owns a live stream and visit that stream as a viewer.",
+  "rca of the issue": "500 on POST /api/my/emotes + /api/streams/{id}/clip: both endpoints did `await db.collection.insert_one(doc); return {**doc, 'created_at': doc['created_at'].isoformat()}`. Motor's insert_one mutates the input dict to add an _id ObjectId. FastAPI's jsonable_encoder then fails with 'ObjectId object is not iterable'. Fix: explicitly strip _id when returning. Applied to both handlers."
+}
