@@ -19,6 +19,16 @@ Latest feature set (Feb 2026):
 
 ## What's Implemented
 
+### Feb 2026 — Subscriber emotes, Streamer emote upload, Chat settings, Clips, Stripe Connect webhook, Kick categories
+- **Kick-style categories** — seed_data now seeds 40+ Kick.com categories with `popularity` score, auto-cleans stale ones. `GET /api/categories?popular=true&limit=12` sorts by (live_stream_count, popularity).
+- **HomePage** — section renamed to "Top 12 Popular Categories" and fetches the top 12.
+- **20 subscriber-only emotes** — built-in blue :svBlueFire: / :svBlueHeart: / etc. exposed via `GET /api/emotes/subscriber` and surfaced in a new "Sub" tab inside `ChatEmojiPicker` (locked unless the viewer is subscribed to the current streamer).
+- **Streamer custom emote upload** — `POST/GET/PUT/DELETE /api/my/emotes`, max 20/streamer, each with `subscribers_only` flag. UI: `EmojiUploadSection.jsx` in Dashboard.
+- **Chat settings** — `GET/PUT /api/my/chat-settings` + public `GET /api/users/{id}/chat-settings`. UI: `ChatSettingsSection.jsx` (chat on/off toggle, rules textarea, Save button). ChatBox shows overlays: **chat-disabled-overlay** or **chat-rules-overlay** (accept-once, persisted via localStorage per stream).
+- **Clips** — `POST /api/streams/{id}/clip` with title + timestamp + captured thumbnail dataURL. `GET /api/streams/{id}/clips` and `GET /api/my/clips`.
+- **Stream player new controls** — PiP button (uses `<video>.requestPictureInPicture`), Clip button (captures frame + creates clip record), Theatre mode toggle (hides chat sidebar, expands video). Keyboard shortcuts: **C** (clip), **T** (theatre), **P** (PiP).
+- **Stripe Connect webhook** — `POST /api/webhook/stripe/connect` handles `account.updated`, `payout.paid`, `payout.failed` with full signature verification when `STRIPE_CONNECT_WEBHOOK_SECRET` env var is set (dev mode accepts any JSON). Triggers streamer notifications on verification and payout events.
+
 ### Feb 2026 — Feature release (Revenue analytics, Stripe Connect, Ad Monetization)
 - **Revenue analytics** — backend `GET /api/my/revenue/analytics?period=daily|weekly|monthly` aggregates donations+subscriptions+ad earnings into time-bucketed series. Frontend `RevenueAnalyticsChart.jsx` renders via Recharts (Line + Bar toggle) in Dashboard.
 - **Stripe Connect Custom onboarding** — backend endpoints `POST /api/my/stripe-connect/create`, `GET /api/my/stripe-connect/status`, `DELETE /api/my/stripe-connect`. Frontend `StripeConnectSection.jsx` collects name, DOB, address, bank (routing/account or IBAN) + TOS and creates a Custom account via Stripe SDK with bank account token attached as external account.
