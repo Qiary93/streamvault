@@ -461,7 +461,7 @@ async def resend_verification(request: Request):
         # Silently pretend success to avoid enumeration
         return {"message": "If that email exists, a verification link was sent."}
     
-    if user.get("email_verified"):
+    if user.get("email_verified") is not False:
         return {"message": "Email is already verified."}
     
     smtp_cfg = await db.admin_config.find_one({"type": "smtp"}, {"_id": 0})
@@ -568,6 +568,7 @@ async def google_session(request: Request):
             "following_count": 0,
             "is_streaming": False,
             "stream_key": stream_key,
+            "email_verified": True,  # Google OAuth → email is already verified
             "created_at": datetime.now(timezone.utc)
         }
         await db.users.insert_one(user_doc)
@@ -1596,9 +1597,16 @@ async def seed_data():
             "following_count": 0,
             "is_streaming": False,
             "stream_key": f"sk_{secrets.token_hex(16)}",
+            "email_verified": True,
             "created_at": datetime.now(timezone.utc)
         })
         logger.info("Admin user created")
+    
+    # Backfill email_verified=True for any legacy users missing the field
+    await db.users.update_many(
+        {"email_verified": {"$exists": False}},
+        {"$set": {"email_verified": True}}
+    )
     
     # Seed categories — full Kick.com category list (~40)
     categories = [

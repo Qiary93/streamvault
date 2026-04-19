@@ -10,6 +10,16 @@ Build a Kick.com-style livestream platform: real-time video (LiveKit/WebRTC), We
 
 ## What's Implemented
 
+### Feb 2026 — SMTP / Email verification, Tier badges, Live Timer, 60 emote limit
+- **Admin SMTP Settings** — `/api/admin/smtp-settings` GET/PUT + `/api/admin/smtp-test` endpoints. Frontend `AdminSmtpSettings.jsx` with host/port/user/password/from_email/from_name/STARTTLS/SSL controls. Password-masked (`••••••••` placeholder preserves existing value).
+- **Email verification flow** — when SMTP is enabled, `POST /api/auth/register` sets `email_verified=false`, generates token, sends verification email (aiosmtplib), returns `{verification_required:true}` without cookies. `POST /api/auth/login` returns 403 until verified. `POST /api/auth/verify-email` activates the account. `POST /api/auth/resend-verification` re-issues token + email. Frontend `/verify-email?token=X` page + AuthPage toast flow. Seed backfills `email_verified=True` on legacy accounts; Google OAuth auto-verifies.
+- **Subscription Tier Badges** — `POST/DELETE /api/my/tiers/{tier_id}/badge` (max 256KB). `POST /api/my/subscription-tiers` now preserves badge_url across saves by matching on tier_id (and fallback by name). Frontend SubscriptionTiersSettings has per-tier "Badge 32×32" upload button. StreamPage subscribe modal shows the badge next to the tier perks description.
+- **Emote limit raised** — 20 → 60 per streamer (backend + EmojiUploadSection UI).
+- **Removed global "Sub" emote tab** from chat emoji picker (platform-wide subscriber emotes no longer surface in UI; streamer custom emotes remain the subs-gated option).
+- **Dashboard "Time Live"** — under Stream Status card, `LiveTimer.jsx` component counts from `broadcasting_started_at` and resets when OBS disconnects (showing `--:--`).
+- **Stream Player broadcasting timer** — left overlay on video player shows elapsed broadcasting time in real-time alongside the LIVE badge.
+- **Stream lifecycle fields** — `broadcasting_started_at` / `broadcasting_ended_at` set automatically on `/check-broadcast` transitions, manual toggle, and end-stream. `/check-broadcast` response now includes `broadcasting_started_at` for immediate timer sync.
+
 ### Feb 2026 — IMA SDK, Level-up confetti, Profile feed, Leaderboards, Game autocomplete, SSRF hardening
 - **SSRF-hardened VAST resolver** — `/api/ads/vast/resolve` now blocks private / loopback / link-local / multicast / reserved IP addresses (including metadata `169.254.169.254`), rejects non-http(s) schemes, and revalidates redirect targets.
 - **Google IMA SDK ad type** — new `ad_type='ima'` in admin monetization. `AdPlayer.jsx` lazy-loads `ima3.js` and uses `AdsLoader` + `AdsManager` for full VAST/VPAID/adaptive-streaming/companion support.
