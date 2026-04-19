@@ -95,6 +95,23 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
           return;
         }
         
+        // Real-time chat settings sync
+        if (message.type === 'chat_settings_updated') {
+          setChatSettings(prev => ({
+            ...prev,
+            chat_enabled: message.chat_enabled !== false,
+            rules: message.rules || '',
+            followers_only: !!message.followers_only,
+            subscribers_only: !!message.subscribers_only,
+          }));
+          // If rules changed, reset acceptance so viewers see them again
+          if ((message.rules || '') !== chatSettings.rules) {
+            try { localStorage.removeItem(`sv_chat_rules_${streamId}`); } catch {}
+            setRulesAccepted(false);
+          }
+          return;
+        }
+        
         // Handle moderation broadcasts
         if (message.type === 'moderation') {
           const modMsg = {

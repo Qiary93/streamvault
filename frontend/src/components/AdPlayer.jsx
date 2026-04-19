@@ -104,15 +104,12 @@ export default function AdPlayer({ streamId, placement = 'live_pre_roll', onFini
     <div className="absolute inset-0 z-30 bg-black flex flex-col" data-testid="ad-player">
       <div className="flex-1 relative overflow-hidden">
         {ad.ad_type === 'video' && ad.video_url && (
-          <video
-            src={ad.video_url}
-            autoPlay
-            muted
-            playsInline
-            onEnded={finish}
-            className="w-full h-full object-contain"
-            data-testid="ad-video"
-          />
+          <video src={ad.video_url} autoPlay muted playsInline onEnded={finish} className="w-full h-full object-contain" data-testid="ad-video" />
+        )}
+        {ad.ad_type === 'vast' && resolvedMedia?.url && (
+          <a href={resolvedMedia.click_url || '#'} target="_blank" rel="noopener noreferrer">
+            <video src={resolvedMedia.url} autoPlay muted playsInline onEnded={finish} className="w-full h-full object-contain" data-testid="ad-vast-video" />
+          </a>
         )}
         {ad.ad_type === 'image' && ad.image_url && (
           <a href={ad.click_url || '#'} target="_blank" rel="noopener noreferrer" onClick={() => {}}>

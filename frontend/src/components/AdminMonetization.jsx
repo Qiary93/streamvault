@@ -19,6 +19,7 @@ const AD_TYPES = [
   { value: 'html', label: 'HTML / ad-network code' },
   { value: 'video', label: 'Video file (URL)' },
   { value: 'image', label: 'Image banner (URL)' },
+  { value: 'vast', label: 'VAST tag URL (IMA/GAM compatible)' },
 ];
 
 export default function AdminMonetization() {
@@ -62,6 +63,7 @@ export default function AdminMonetization() {
         ad_code: '',
         image_url: '',
         video_url: '',
+        vast_url: '',
         click_url: '',
         duration_sec: 15,
         active: true,
@@ -228,6 +230,13 @@ export default function AdminMonetization() {
                       <label className="text-xs text-[#A0A0AB] block mb-1">Click URL</label>
                       <Input value={slot.click_url} onChange={e => updateSlot(i, { click_url: e.target.value })} placeholder="https://advertiser.com" className="bg-[#0F0F16] border-white/10 text-white" data-testid={`slot-click-img-${i}`} />
                     </div>
+                  </div>
+                )}
+                {slot.ad_type === 'vast' && (
+                  <div className="mb-3">
+                    <label className="text-xs text-[#A0A0AB] block mb-1">VAST tag URL (Google Ad Manager / IMA)</label>
+                    <Input value={slot.vast_url || ''} onChange={e => updateSlot(i, { vast_url: e.target.value })} placeholder="https://pubads.g.doubleclick.net/gampad/ads?..." className="bg-[#0F0F16] border-white/10 text-white" data-testid={`slot-vast-${i}`} />
+                    <p className="text-xs text-[#A0A0AB] mt-1">The platform fetches this VAST XML server-side and plays the returned MediaFile creative.</p>
                   </div>
                 )}
 

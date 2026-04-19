@@ -14,6 +14,7 @@ import StripeConnectSection from '../components/StripeConnectSection';
 import MonetizationSection from '../components/MonetizationSection';
 import EmojiUploadSection from '../components/EmojiUploadSection';
 import ChatSettingsSection from '../components/ChatSettingsSection';
+import PathToPerfectStreamer from '../components/PathToPerfectStreamer';
 import { toast } from 'sonner';
 import axios from 'axios';
 
@@ -679,6 +680,9 @@ export default function DashboardPage() {
           <p className="text-[#A0A0AB] text-center py-8">No donations yet</p>
         )}
       </div>
+
+      {/* Path to a perfect streamer */}
+      <PathToPerfectStreamer />
     </div>
   );
 }

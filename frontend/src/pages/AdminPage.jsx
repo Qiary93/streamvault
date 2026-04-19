@@ -6,6 +6,7 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import AdminMonetization from '../components/AdminMonetization';
+import AdminOtherSettings from '../components/AdminOtherSettings';
 import { toast } from 'sonner';
 import axios from 'axios';
 
@@ -541,6 +542,9 @@ export default function AdminPage() {
           </ol>
         </div>
       </div>
+
+      {/* Other Settings */}
+      <AdminOtherSettings />
 
       {/* Monetization */}
       <AdminMonetization />

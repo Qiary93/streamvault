@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { Megaphone, TrendUp, Eye, CurrencyDollar } from '@phosphor-icons/react';
+import { toast } from 'sonner';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -14,17 +15,20 @@ const PLACEMENT_LABELS = {
 export default function MonetizationSection() {
   const [earnings, setEarnings] = useState(null);
   const [adSettings, setAdSettings] = useState(null);
+  const [optOut, setOptOut] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       try {
-        const [e, s] = await Promise.all([
+        const [e, s, o] = await Promise.all([
           axios.get(`${API}/api/my/ad-earnings`, { withCredentials: true }),
           axios.get(`${API}/api/ads/active?placement=live_pre_roll`).catch(() => ({ data: { enabled: false } })),
+          axios.get(`${API}/api/my/ad-opt-out`, { withCredentials: true }).catch(() => ({ data: { opt_out: false } })),
         ]);
         setEarnings(e.data);
         setAdSettings(s.data);
+        setOptOut(!!o.data.opt_out);
       } catch (err) {
         console.error(err);
       } finally {
@@ -32,6 +36,17 @@ export default function MonetizationSection() {
       }
     })();
   }, []);
+
+  const toggleOptOut = async () => {
+    const next = !optOut;
+    try {
+      await axios.put(`${API}/api/my/ad-opt-out`, { opt_out: next }, { withCredentials: true });
+      setOptOut(next);
+      toast.success(next ? 'Ads disabled on your streams' : 'Ads re-enabled on your streams');
+    } catch {
+      toast.error('Failed to update preference');
+    }
+  };
 
   if (loading) return null;
 
@@ -51,6 +66,15 @@ export default function MonetizationSection() {
           Platform ads: {adsEnabled ? 'ACTIVE' : 'DISABLED'}
         </span>
       </div>
+
+      {/* Ad opt-out toggle */}
+      <label className="flex items-center gap-3 p-3 bg-[#1A1A24] rounded-lg cursor-pointer mb-4" data-testid="ad-opt-out-row">
+        <input type="checkbox" checked={optOut} onChange={toggleOptOut} className="accent-red-500" data-testid="ad-opt-out-toggle" />
+        <div className="flex-1">
+          <p className="text-sm text-white font-medium">Disable ads on my streams</p>
+          <p className="text-xs text-[#A0A0AB]">When enabled, viewers on your streams and VODs will not see ads. You will not earn from ads.</p>
+        </div>
+      </label>
 
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-5">
         <div className="p-4 bg-[#1A1A24] rounded-lg" data-testid="ad-total-impressions">

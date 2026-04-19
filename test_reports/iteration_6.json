@@ -1,0 +1,66 @@
+{
+  "summary": "Iteration 6 testing complete. Backend: 20/20 tests passed on /app/backend/tests/test_streamvault_v6.py (recommended live+broadcasting filter, categories non-404, chat-settings new fields + invalid-mode fallback to 'filter', achievements 4-grade shape, streamer-path 4 missions, following pagination & live-first, admin other-settings + /config/features public, ad-opt-out roundtrip, /ads/active respects streamer_opt_out, admin/ad-settings persists vast ad_type+vast_url, /ads/vast/resolve 400 on invalid). Frontend: All expected testids present on Home / Sidebar / Dashboard / Profile / Admin / MonetizationSection. Chat-settings save+reload persists restricted_words + block mode. Verified-badge correctly hidden when user has no grade. RecommendedSidebar correctly hidden when zero live-broadcasting streamers (by design). Found minor testid naming drift vs review_request spec on Admin panel (not broken, just different names).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "Backend 20/20:",
+    "- GET /api/recommended returns list; all items have active_stream_id + viewer_count + game_name + broadcasting=true + is_streaming=true; no admin",
+    "- GET /api/categories: no 404 on first 15 image URLs",
+    "- GET /api/my/chat-settings returns all 6 fields with correct defaults",
+    "- PUT /api/my/chat-settings persists followers_only/subscribers_only/restricted_words (lowercased+trimmed)/restricted_words_mode=block; GET returns same",
+    "- PUT /api/my/chat-settings with invalid mode -> defaults to 'filter'",
+    "- GET /api/my/achievements + /api/users/{id}/achievements: 4 grade objects each with missions list + done bools; stats + verified + grade fields present",
+    "- GET /api/my/streamer-path: 4 missions with ids {subs_50, followers_500, hours_300, chatters_500}, each with current/required/done",
+    "- GET /api/my/following: {total, items}; each item has is_live + user_id; sort live-first respected; limit/offset pagination works",
+    "- GET /api/admin/other-settings: 403 for non-admin, 200 for admin; PUT toggles achievements_enabled + path_enabled; /api/config/features public reflects toggle changes",
+    "- GET+PUT /api/my/ad-opt-out roundtrips opt_out bool",
+    "- GET /api/ads/active?stream_id=X with streamer opt_out=true returns {ad:null, reason:'streamer_opt_out'}",
+    "- PUT /api/admin/ad-settings accepts ad_type='vast' + vast_url; persists; GET returns slot with vast_url intact",
+    "- GET /api/ads/vast/resolve?url=not_a_url -> 400; empty url -> 400/422",
+    "Frontend UI (logged in as progamer / then admin):",
+    "- Sidebar 'FOLLOWERS (N)' header present with follow-<uid> items; show-more/less only render when total>10 (correct)",
+    "- Dashboard: path-to-perfect-streamer + 4 path-mission-* + 4 path-triangle-{done|pending}",
+    "- Dashboard: chat-settings-section with followers-only-toggle + subscribers-only-toggle + restricted-words-input + rw-mode-filter + rw-mode-block",
+    "- Chat settings save+reload: restricted_words ('spamword, badword') and rw-mode-block persist across reload",
+    "- Dashboard monetization-section + ad-opt-out-toggle present",
+    "- Profile /user/progamer: achievements-section + 4 grade-* cards + 12 mission-triangle-*-{done|pending} elements",
+    "- Profile verified-badge correctly hidden for progamer (no grade earned yet)",
+    "- Admin panel: admin-other-settings section visible above Monetization with save-other-settings-btn",
+    "- Admin monetization: admin-monetization + add-ad-slot-btn present; VAST input testid 'slot-vast-{i}' exists on slot rows"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_streamvault_v6.py",
+    "/app/test_reports/pytest/pytest_results_v6.xml"
+  ],
+  "action_items": [
+    "MINOR: AdminOtherSettings testids use 'toggle-achievements' / 'toggle-path' (not 'achievements-enabled-toggle' / 'path-enabled-toggle' as review_request named). Consider renaming for consistency with spec.",
+    "MINOR: AdminMonetization testids use 'slot-type-{i}' / 'slot-vast-{i}' (not 'ad-slot-type-{i}' / 'ad-slot-vast-url-{i}' as spec named). Functional but naming drift.",
+    "Optional: RecommendedSidebar returned [] during test run because no demo streamer had is_live=true & broadcasting=true. Sidebar component correctly renders null. To manually verify the green-dot/viewer-count/game-name rendering in the UI, either seed a broadcasting=true stream or go live via OBS on progamer and re-visit /.",
+    "Optional: achievements grades all show pending for progamer (expected — no $100 donations / 500 follows / 5-month subs). To verify green triangles on done missions, seed higher-grade data for a demo user."
+  ],
+  "critical_code_review_comments": [
+    "server.py now 4051 lines (was 3611). Continue to recommend splitting into routers (achievements.py, streamer_path.py, followers.py, admin_other_settings.py, ad_optout.py, vast_resolver.py).",
+    "/api/recommended: N+1 query (loops live_streams then fetches each user). Could use $lookup aggregation. Low priority — bounded to 20.",
+    "/api/ads/vast/resolve: fetches arbitrary URL server-side with no allow-list -> SSRF risk (can hit internal metadata IP). Should whitelist domains or block private IP ranges before prod. Current dev use is fine.",
+    "compute_streamer_path: fallback 'count all' for followers/chatters when 0 in last-12mo may mask accurate data when created_at timestamps missing. Consider ensuring created_at is always set on follow documents.",
+    "/api/my/chat-settings PUT broadcasts via chat_manager only when a live stream exists — good. However chat-settings WebSocket enforcement (followers-only/subs-only/restricted_words filter/block) was not exercised in this iteration (explicitly out-of-scope per review_request note).",
+    "Admin testid drift — small enough to fix in 5 min; either update frontend to match spec or update spec. Recommend frontend rename since review_request is the contract."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_streamvault_v6.py (new)"
+  ],
+  "success_rate": {"backend": "100% (20/20)", "frontend": "100% of executed testid + integration checks"},
+  "test_credentials": {
+    "admin": "admin@streamvault.com / Admin123!",
+    "streamer": "progamer@demo.com / Demo123!"
+  },
+  "seed_data_creation": "Fixture-scoped: TEST_slot_optout (html) + TEST_vast_slot (vast) ad slots created then cleaned up in the same test class. TEST_ chat-settings values (restricted_words ['spamword','badword'], rw-mode=block, followers_only=true) left on progamer's record after UI save — main agent may want to reset via ChatSettings UI before demo.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 6 adds: /api/recommended live+broadcasting filter, chat-settings new fields (followers_only/subs_only/restricted_words+mode) with WebSocket broadcast, achievements (4 grades) + streamer-path (4 missions) + following pagination, admin other-settings + public feature flags, streamer ad opt-out, VAST ad_type persistence + /api/ads/vast/resolve. Frontend route is /auth (NOT /login); profile is /user/:username (NOT /profile/:username). WebSocket chat enforcement (followers-only/subs-only/restricted_words filter vs block) was NOT end-to-end tested — only the persistence side was verified; review_request explicitly allowed skipping WS assertion. VAST resolve happy-path with real tag URL not tested (networking + SSRF concern); only 400-on-invalid was verified per spec.",
+  "rca of the issue": "No new bugs. Two minor testid naming drifts on Admin page (toggle-achievements vs achievements-enabled-toggle; slot-type-{i} vs ad-slot-type-{i}; slot-vast-{i} vs ad-slot-vast-url-{i}). Cause: review_request spec and implementation diverged. Mitigation: rename frontend testids to match spec or update spec. Not blocking — UI is fully functional."
+}

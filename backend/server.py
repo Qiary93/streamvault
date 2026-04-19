@@ -1408,52 +1408,38 @@ async def get_streams_by_game(game_name: str, limit: int = 20):
 
 @api_router.get("/recommended")
 async def get_recommended(request: Request):
-    """Get 10 recommended streamers based on user interests or random."""
+    """Returns streamers broadcasting LIVE via OBS (broadcasting=true) with current stream info."""
     current_user = await get_optional_user(request)
     
-    streamers = []
+    # Find LIVE streams (broadcasting + is_live)
+    stream_pipeline = [
+        {"$match": {"is_live": True, "broadcasting": True}},
+        {"$sort": {"viewer_count": -1}},
+        {"$limit": 20},
+    ]
+    live_streams = await db.streams.aggregate(stream_pipeline).to_list(20)
     
-    if current_user:
-        # Get categories the user follows/watches
-        follows = await db.follows.find({"follower_id": current_user["user_id"]}, {"_id": 0, "following_id": 1}).to_list(100)
-        following_ids = [f["following_id"] for f in follows]
-        
-        # Get streamers the user doesn't follow yet, preferring active ones
-        pipeline = [
-            {"$match": {
-                "user_id": {"$nin": following_ids + [current_user["user_id"]]},
-                "role": {"$ne": "admin"}
-            }},
-            {"$sample": {"size": 10}},
-            {"$project": {"_id": 0, "password_hash": 0, "stream_key": 0}}
-        ]
-        streamers = await db.users.aggregate(pipeline).to_list(10)
+    results = []
+    for stream in live_streams:
+        # exclude current user from recommendations
+        if current_user and stream.get("user_id") == current_user.get("user_id"):
+            continue
+        streamer = await db.users.find_one({"user_id": stream["user_id"]}, {"_id": 0, "password_hash": 0, "stream_key": 0})
+        if not streamer or streamer.get("role") == "admin":
+            continue
+        results.append({
+            **streamer,
+            "active_stream_id": stream.get("stream_id"),
+            "viewer_count": stream.get("viewer_count", 0),
+            "game_name": stream.get("game_name") or "",
+            "stream_title": stream.get("title") or "",
+            "is_streaming": True,
+            "broadcasting": True,
+        })
+        if len(results) >= 10:
+            break
     
-    if len(streamers) < 10:
-        # Fill with random streamers
-        existing_ids = [s["user_id"] for s in streamers]
-        if current_user:
-            existing_ids.append(current_user["user_id"])
-        
-        pipeline = [
-            {"$match": {"user_id": {"$nin": existing_ids}, "role": {"$ne": "admin"}}},
-            {"$sample": {"size": 10 - len(streamers)}},
-            {"$project": {"_id": 0, "password_hash": 0, "stream_key": 0}}
-        ]
-        more = await db.users.aggregate(pipeline).to_list(10 - len(streamers))
-        streamers.extend(more)
-    
-    # Attach active stream_id for live streamers
-    for s in streamers:
-        if s.get("is_streaming"):
-            stream = await db.streams.find_one(
-                {"user_id": s["user_id"], "is_live": True},
-                {"_id": 0, "stream_id": 1}
-            )
-            if stream:
-                s["active_stream_id"] = stream["stream_id"]
-    
-    return streamers
+    return results
 
 # ============= EMOTES =============
 
@@ -1519,10 +1505,10 @@ async def seed_data():
     categories = [
         # Top tier
         {"category_id": "cat_just_chatting", "name": "Just Chatting", "description": "Casual conversations and hangouts", "image_url": "https://images.pexels.com/photos/1718758/pexels-photo-1718758.jpeg", "popularity": 100},
-        {"category_id": "cat_slots_casino", "name": "Slots & Casino", "description": "Live casino and slots action", "image_url": "https://images.pexels.com/photos/34480/cards-casino-gambling-poker.jpg", "popularity": 95},
+        {"category_id": "cat_slots_casino", "name": "Slots & Casino", "description": "Live casino and slots action", "image_url": "https://images.pexels.com/photos/1871508/pexels-photo-1871508.jpeg", "popularity": 95},
         {"category_id": "cat_gta_v", "name": "Grand Theft Auto V", "description": "GTA V gameplay and RP", "image_url": "https://images.pexels.com/photos/9072304/pexels-photo-9072304.jpeg", "popularity": 94},
         {"category_id": "cat_league_of_legends", "name": "League of Legends", "description": "LoL matches and coaching", "image_url": "https://images.pexels.com/photos/14266493/pexels-photo-14266493.jpeg", "popularity": 93},
-        {"category_id": "cat_valorant", "name": "VALORANT", "description": "Valorant ranked and tournaments", "image_url": "https://images.pexels.com/photos/7862604/pexels-photo-7862604.jpeg", "popularity": 92},
+        {"category_id": "cat_valorant", "name": "VALORANT", "description": "Valorant ranked and tournaments", "image_url": "https://images.pexels.com/photos/275033/pexels-photo-275033.jpeg", "popularity": 92},
         {"category_id": "cat_fortnite", "name": "Fortnite", "description": "Fortnite battle royale", "image_url": "https://images.pexels.com/photos/1293261/pexels-photo-1293261.jpeg", "popularity": 91},
         {"category_id": "cat_counter_strike", "name": "Counter-Strike 2", "description": "CS2 competitive gameplay", "image_url": "https://images.pexels.com/photos/442576/pexels-photo-442576.jpeg", "popularity": 90},
         {"category_id": "cat_minecraft", "name": "Minecraft", "description": "Minecraft survival and creative", "image_url": "https://images.pexels.com/photos/1294020/pexels-photo-1294020.jpeg", "popularity": 88},
@@ -1550,12 +1536,12 @@ async def seed_data():
         {"category_id": "cat_overwatch_2", "name": "Overwatch 2", "description": "Overwatch 2 ranked and arcade", "image_url": "https://images.pexels.com/photos/442576/pexels-photo-442576.jpeg", "popularity": 52},
         {"category_id": "cat_elden_ring", "name": "Elden Ring", "description": "Elden Ring PvE and PvP", "image_url": "https://images.pexels.com/photos/371924/pexels-photo-371924.jpeg", "popularity": 50},
         {"category_id": "cat_pokemon", "name": "Pokémon", "description": "Pokémon games and cards", "image_url": "https://images.pexels.com/photos/163064/play-stone-network-networked-interactive-163064.jpeg", "popularity": 48},
-        {"category_id": "cat_dark_and_darker", "name": "Dark and Darker", "description": "Dark and Darker dungeons", "image_url": "https://images.pexels.com/photos/163407/pexels-photo-163407.jpeg", "popularity": 46},
+        {"category_id": "cat_dark_and_darker", "name": "Dark and Darker", "description": "Dark and Darker dungeons", "image_url": "https://images.pexels.com/photos/4009402/pexels-photo-4009402.jpeg", "popularity": 46},
         {"category_id": "cat_marvel_rivals", "name": "Marvel Rivals", "description": "Marvel Rivals competitive", "image_url": "https://images.pexels.com/photos/9072304/pexels-photo-9072304.jpeg", "popularity": 44},
         {"category_id": "cat_pubg", "name": "PUBG: Battlegrounds", "description": "PUBG battle royale", "image_url": "https://images.pexels.com/photos/1293261/pexels-photo-1293261.jpeg", "popularity": 42},
-        {"category_id": "cat_tarkov", "name": "Escape From Tarkov", "description": "Tarkov raids", "image_url": "https://images.pexels.com/photos/163407/pexels-photo-163407.jpeg", "popularity": 40},
+        {"category_id": "cat_tarkov", "name": "Escape From Tarkov", "description": "Tarkov raids", "image_url": "https://images.pexels.com/photos/1796795/pexels-photo-1796795.jpeg", "popularity": 40},
         {"category_id": "cat_path_of_exile", "name": "Path of Exile", "description": "PoE ARPG gameplay", "image_url": "https://images.pexels.com/photos/371924/pexels-photo-371924.jpeg", "popularity": 38},
-        {"category_id": "cat_stellar_blade", "name": "Stellar Blade", "description": "Stellar Blade action", "image_url": "https://images.pexels.com/photos/7862604/pexels-photo-7862604.jpeg", "popularity": 36},
+        {"category_id": "cat_stellar_blade", "name": "Stellar Blade", "description": "Stellar Blade action", "image_url": "https://images.pexels.com/photos/163036/mario-luigi-yoschi-figures-163036.jpeg", "popularity": 36},
         # Niche / evergreen
         {"category_id": "cat_asmr", "name": "ASMR", "description": "Relaxing ASMR streams", "image_url": "https://images.pexels.com/photos/4041392/pexels-photo-4041392.jpeg", "popularity": 34},
         {"category_id": "cat_talk_shows", "name": "Talk Shows & Podcasts", "description": "Live podcasts and interviews", "image_url": "https://images.pexels.com/photos/3784424/pexels-photo-3784424.jpeg", "popularity": 32},
@@ -1773,9 +1759,39 @@ async def websocket_chat(websocket: WebSocket, stream_id: str):
                 await websocket.send_json({"type": "system", "content": f"You are timed out for {remaining}s."})
                 continue
             
+            # Determine streamer_id for this stream
+            stream_info = await db.streams.find_one({"stream_id": stream_id}, {"_id": 0, "user_id": 1, "slow_mode": 1})
+            streamer_id = stream_info.get("user_id") if stream_info else None
+            
+            # Fetch streamer chat settings
+            chat_cfg = await db.chat_settings.find_one({"user_id": streamer_id}, {"_id": 0}) if streamer_id else {}
+            chat_cfg = chat_cfg or {}
+            
+            # Chat disabled
+            if chat_cfg.get("chat_enabled") is False:
+                await websocket.send_json({"type": "system", "content": "Chat is disabled for this stream."})
+                continue
+            
+            # Followers-only
+            if chat_cfg.get("followers_only") and user_id not in ("anonymous", streamer_id):
+                following = await db.follows.find_one({"follower_id": user_id, "following_id": streamer_id})
+                if not following:
+                    await websocket.send_json({"type": "system", "content": "Followers-only chat. Follow the streamer to chat."})
+                    continue
+            
+            # Subscribers-only
+            if chat_cfg.get("subscribers_only") and user_id not in ("anonymous", streamer_id):
+                active_sub = await db.subscriptions.find_one({
+                    "user_id": user_id,
+                    "streamer_id": streamer_id,
+                    "status": "active"
+                })
+                if not active_sub:
+                    await websocket.send_json({"type": "system", "content": "Subscribers-only chat. Subscribe to chat."})
+                    continue
+            
             # Check slow mode
-            stream = await db.streams.find_one({"stream_id": stream_id}, {"_id": 0, "slow_mode": 1})
-            slow_mode = stream.get("slow_mode", 0) if stream else 0
+            slow_mode = stream_info.get("slow_mode", 0) if stream_info else 0
             if slow_mode > 0 and user_id != "anonymous":
                 last_msg = await db.chat_messages.find_one(
                     {"stream_id": stream_id, "user_id": user_id},
@@ -1792,6 +1808,25 @@ async def websocket_chat(websocket: WebSocket, stream_id: str):
                         await websocket.send_json({"type": "system", "content": f"Slow mode active. Wait {int(slow_mode - diff)}s."})
                         continue
             
+            raw_content = str(data.get("content", ""))[:500]
+            final_content = raw_content
+            
+            # Restricted words check
+            restricted_words = chat_cfg.get("restricted_words") or []
+            rw_mode = chat_cfg.get("restricted_words_mode", "filter")
+            if restricted_words and user_id != streamer_id:
+                import re
+                lowered = raw_content.lower()
+                hits = [w for w in restricted_words if w and w in lowered]
+                if hits:
+                    if rw_mode == "block":
+                        await websocket.send_json({"type": "system", "content": f"Message blocked — contains restricted word."})
+                        continue
+                    else:
+                        for w in hits:
+                            pattern = re.compile(re.escape(w), re.IGNORECASE)
+                            final_content = pattern.sub("***", final_content)
+            
             message_doc = {
                 "message_id": f"msg_{uuid.uuid4().hex[:12]}",
                 "stream_id": stream_id,
@@ -1799,13 +1834,21 @@ async def websocket_chat(websocket: WebSocket, stream_id: str):
                 "username": data.get("username", "Anonymous"),
                 "display_name": data.get("display_name"),
                 "avatar_url": data.get("avatar_url"),
-                "content": str(data.get("content", ""))[:500],
+                "content": final_content,
                 "type": data.get("type", "message"),
                 "created_at": datetime.now(timezone.utc).isoformat()
             }
             
             await db.chat_messages.insert_one({**message_doc})
             message_doc.pop("_id", None)
+            
+            # Track unique chatters (for streamer "Path" achievement)
+            if user_id and user_id != "anonymous" and streamer_id:
+                await db.stream_chatters.update_one(
+                    {"streamer_id": streamer_id, "user_id": user_id},
+                    {"$setOnInsert": {"first_seen": datetime.now(timezone.utc)}, "$set": {"last_seen": datetime.now(timezone.utc)}},
+                    upsert=True,
+                )
             
             await chat_manager.broadcast(stream_id, message_doc)
     except WebSocketDisconnect:
@@ -3061,7 +3104,7 @@ async def admin_update_ad_settings(request: Request, user: dict = Depends(get_cu
         raise HTTPException(status_code=403, detail="Admin access required")
     body = await request.json()
     
-    # ad_slots: list of {slot_id, name, placement (live_pre_roll|live_mid_roll|vod_pre_roll|vod_mid_roll), ad_type (html|video|image), ad_code, image_url, video_url, click_url, duration_sec, active}
+    # ad_slots: list of {slot_id, name, placement (live_pre_roll|live_mid_roll|vod_pre_roll|vod_mid_roll), ad_type (html|video|image|vast), ad_code, image_url, video_url, vast_url, click_url, duration_sec, active}
     slots_in = body.get("ad_slots", []) or []
     slots = []
     for s in slots_in[:50]:
@@ -3073,6 +3116,7 @@ async def admin_update_ad_settings(request: Request, user: dict = Depends(get_cu
             "ad_code": str(s.get("ad_code", ""))[:10000],
             "image_url": str(s.get("image_url", ""))[:500],
             "video_url": str(s.get("video_url", ""))[:500],
+            "vast_url": str(s.get("vast_url", ""))[:500],
             "click_url": str(s.get("click_url", ""))[:500],
             "duration_sec": max(1, min(60, int(s.get("duration_sec") or 15))),
             "active": bool(s.get("active", True)),
@@ -3093,21 +3137,88 @@ async def admin_update_ad_settings(request: Request, user: dict = Depends(get_cu
     return {"message": "Ad settings saved", **{k: v for k, v in doc.items() if k != "updated_at"}}
 
 
+@api_router.get("/ads/vast/resolve")
+async def resolve_vast(url: str):
+    """Fetches a VAST tag URL and returns the first MediaFile URL + duration (basic VAST 2/3/4 support)."""
+    if not url or not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Invalid VAST URL")
+    try:
+        import httpx
+        import xml.etree.ElementTree as ET
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            res = await client.get(url)
+        if res.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"VAST fetch failed: {res.status_code}")
+        
+        root = ET.fromstring(res.text)
+        # Find first MediaFile
+        media_url = None
+        mime_type = None
+        for mf in root.iter():
+            if mf.tag.split("}")[-1] == "MediaFile":
+                media_url = (mf.text or "").strip()
+                mime_type = mf.attrib.get("type") or mf.attrib.get("mimeType")
+                if media_url:
+                    break
+        
+        # Find Duration
+        duration_sec = 15
+        for d in root.iter():
+            if d.tag.split("}")[-1] == "Duration" and d.text:
+                try:
+                    parts = d.text.strip().split(":")
+                    if len(parts) == 3:
+                        h, m, s = parts
+                        duration_sec = int(float(h)) * 3600 + int(float(m)) * 60 + int(float(s))
+                except Exception:
+                    pass
+                break
+        
+        # Find ClickThrough
+        click_url = ""
+        for c in root.iter():
+            if c.tag.split("}")[-1] == "ClickThrough" and c.text:
+                click_url = c.text.strip()
+                break
+        
+        if not media_url:
+            return {"ok": False, "error": "No MediaFile found in VAST response"}
+        
+        return {
+            "ok": True,
+            "media_url": media_url,
+            "mime_type": mime_type,
+            "duration_sec": max(1, min(60, duration_sec)),
+            "click_url": click_url,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"VAST resolve error: {e}")
+        raise HTTPException(status_code=502, detail=f"VAST parse error: {str(e)}")
+
+
 @api_router.get("/ads/active")
-async def get_active_ad(placement: str = "live_pre_roll"):
-    """Public endpoint — returns one active ad slot for the given placement. Used by players."""
+async def get_active_ad(placement: str = "live_pre_roll", stream_id: Optional[str] = None):
+    """Public endpoint — returns one active ad slot for the given placement. Respects streamer opt-out."""
     cfg = await db.admin_config.find_one({"type": "ad_settings"}, {"_id": 0})
     if not cfg or not cfg.get("enabled"):
         return {"enabled": False, "ad": None}
+    
+    # If a stream is specified, check streamer ad opt-out
+    if stream_id:
+        stream = await db.streams.find_one({"stream_id": stream_id}, {"_id": 0, "user_id": 1})
+        if stream and stream.get("user_id"):
+            opt = await db.streamer_ad_prefs.find_one({"user_id": stream["user_id"]}, {"_id": 0, "opt_out": 1})
+            if opt and opt.get("opt_out"):
+                return {"enabled": True, "ad": None, "reason": "streamer_opt_out"}
     
     slots = [s for s in cfg.get("ad_slots", []) if s.get("active") and s.get("placement") == placement]
     if not slots:
         return {"enabled": True, "ad": None}
     
-    # Round-robin via random
     import random
     slot = random.choice(slots)
-    # Return CPM so the client can display to streamer analytics if needed
     cpm = (cfg.get("cpm_rates") or {}).get(placement, 0)
     return {"enabled": True, "ad": slot, "cpm": cpm}
 
@@ -3409,27 +3520,71 @@ async def delete_my_emote(emote_id: str, user: dict = Depends(get_current_user))
 @api_router.get("/my/chat-settings")
 async def get_my_chat_settings(user: dict = Depends(get_current_user)):
     cfg = await db.chat_settings.find_one({"user_id": user["user_id"]}, {"_id": 0})
-    return cfg or {"user_id": user["user_id"], "chat_enabled": True, "rules": ""}
+    defaults = {
+        "user_id": user["user_id"],
+        "chat_enabled": True,
+        "rules": "",
+        "followers_only": False,
+        "subscribers_only": False,
+        "restricted_words": [],
+        "restricted_words_mode": "filter",  # 'filter' or 'block'
+    }
+    if not cfg:
+        return defaults
+    return {**defaults, **cfg}
 
 
 @api_router.put("/my/chat-settings")
 async def save_my_chat_settings(request: Request, user: dict = Depends(get_current_user)):
     body = await request.json()
+    restricted_words_in = body.get("restricted_words", []) or []
+    if isinstance(restricted_words_in, str):
+        restricted_words_in = [w.strip() for w in restricted_words_in.split(",") if w.strip()]
+    restricted_words = [str(w).strip().lower() for w in restricted_words_in if str(w).strip()][:100]
+    
+    mode = str(body.get("restricted_words_mode", "filter"))
+    if mode not in ("filter", "block"):
+        mode = "filter"
+    
     doc = {
         "user_id": user["user_id"],
         "chat_enabled": bool(body.get("chat_enabled", True)),
         "rules": str(body.get("rules", ""))[:2000],
+        "followers_only": bool(body.get("followers_only", False)),
+        "subscribers_only": bool(body.get("subscribers_only", False)),
+        "restricted_words": restricted_words,
+        "restricted_words_mode": mode,
         "updated_at": datetime.now(timezone.utc),
     }
     await db.chat_settings.update_one({"user_id": user["user_id"]}, {"$set": doc}, upsert=True)
+    
+    # Broadcast to connected chat viewers so they re-fetch rules / apply changes instantly
+    live_stream = await db.streams.find_one({"user_id": user["user_id"], "is_live": True}, {"_id": 0, "stream_id": 1})
+    if live_stream:
+        await chat_manager.broadcast(live_stream["stream_id"], {
+            "type": "chat_settings_updated",
+            "chat_enabled": doc["chat_enabled"],
+            "rules": doc["rules"],
+            "followers_only": doc["followers_only"],
+            "subscribers_only": doc["subscribers_only"],
+        })
+    
     return {"message": "Chat settings saved", **{k: v for k, v in doc.items() if k != "updated_at"}}
 
 
 @api_router.get("/users/{user_id}/chat-settings")
 async def get_user_chat_settings(user_id: str):
-    """Public — returns chat_enabled + rules for a streamer."""
+    """Public — returns chat_enabled + rules + modes for a streamer (excludes restricted_words list from public reveal)."""
     cfg = await db.chat_settings.find_one({"user_id": user_id}, {"_id": 0})
-    return cfg or {"user_id": user_id, "chat_enabled": True, "rules": ""}
+    if not cfg:
+        return {"user_id": user_id, "chat_enabled": True, "rules": "", "followers_only": False, "subscribers_only": False}
+    return {
+        "user_id": user_id,
+        "chat_enabled": cfg.get("chat_enabled", True),
+        "rules": cfg.get("rules", ""),
+        "followers_only": cfg.get("followers_only", False),
+        "subscribers_only": cfg.get("subscribers_only", False),
+    }
 
 
 # ============= CLIPS =============
@@ -3582,6 +3737,291 @@ async def stripe_connect_webhook(request: Request):
         # Still 200 to ack — failed DB writes will retry elsewhere
     
     return {"received": True, "event": event_type, "account": connected_account_id}
+
+
+# ============= ACHIEVEMENTS =============
+
+ACHIEVEMENT_GRADES = [
+    {"grade": "Expert",       "min_subs_5m": 5, "min_max_donation": 50, "min_follows": 20},
+    {"grade": "Advanced",     "min_subs_5m": 3, "min_max_donation": 30, "min_follows": 10},
+    {"grade": "Intermediate", "min_subs_5m": 2, "min_max_donation": 20, "min_follows": 5},
+    {"grade": "Beginner",     "min_subs_5m": 1, "min_max_donation": 0,  "min_follows": 2, "min_donations_count": 5},
+]
+
+
+async def compute_user_achievements(user_id: str):
+    """Compute mission status + current grade for a user."""
+    now = datetime.now(timezone.utc)
+    five_months_ago = now - timedelta(days=30 * 5)
+    
+    # Subscribers for 5+ months — count unique streamer_id where the subscription started ≥5mo ago
+    subs = await db.subscriptions.find(
+        {"user_id": user_id},
+        {"_id": 0, "streamer_id": 1, "status": 1, "created_at": 1, "started_at": 1}
+    ).to_list(1000)
+    long_sub_channels = set()
+    total_donation = 0.0
+    max_donation = 0.0
+    donations_count = 0
+    for s in subs:
+        start = s.get("started_at") or s.get("created_at")
+        if isinstance(start, str):
+            try:
+                start = datetime.fromisoformat(start.replace("Z", "+00:00"))
+            except Exception:
+                start = None
+        if start and start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        if start and start <= five_months_ago:
+            long_sub_channels.add(s.get("streamer_id"))
+    
+    subs_5m_count = len(long_sub_channels)
+    
+    # Donations
+    donations = await db.donations.find({"user_id": user_id}, {"_id": 0, "amount": 1}).to_list(2000)
+    donations_count = len(donations)
+    for d in donations:
+        amt = float(d.get("amount", 0) or 0)
+        total_donation += amt
+        if amt > max_donation:
+            max_donation = amt
+    
+    # Follows
+    follows_count = await db.follows.count_documents({"follower_id": user_id})
+    
+    # Determine highest grade achieved
+    grade = None
+    for g in ACHIEVEMENT_GRADES:
+        ok = subs_5m_count >= g["min_subs_5m"] and max_donation >= g["min_max_donation"] and follows_count >= g["min_follows"]
+        if g.get("min_donations_count"):
+            ok = ok and donations_count >= g["min_donations_count"]
+        if ok:
+            grade = g["grade"]
+            break
+    
+    # Build per-grade mission results
+    grades_with_status = []
+    for g in ACHIEVEMENT_GRADES:
+        missions = [
+            {
+                "id": "subs_5m",
+                "label": f"Be subscribed to {g['min_subs_5m']} streamer channel(s) for 5+ months",
+                "required": g["min_subs_5m"],
+                "current": subs_5m_count,
+                "done": subs_5m_count >= g["min_subs_5m"],
+            },
+        ]
+        if g.get("min_donations_count"):
+            missions.append({
+                "id": "donations_count",
+                "label": f"Make {g['min_donations_count']} donations",
+                "required": g["min_donations_count"],
+                "current": donations_count,
+                "done": donations_count >= g["min_donations_count"],
+            })
+        if g["min_max_donation"] > 0:
+            missions.append({
+                "id": "max_donation",
+                "label": f"Make a single donation of ${g['min_max_donation']}+",
+                "required": g["min_max_donation"],
+                "current": round(max_donation, 2),
+                "done": max_donation >= g["min_max_donation"],
+            })
+        missions.append({
+            "id": "follows",
+            "label": f"Follow {g['min_follows']} streamers",
+            "required": g["min_follows"],
+            "current": follows_count,
+            "done": follows_count >= g["min_follows"],
+        })
+        grades_with_status.append({
+            "grade": g["grade"],
+            "achieved": all(m["done"] for m in missions),
+            "missions": missions,
+        })
+    
+    # Reverse so Beginner is shown first
+    grades_with_status.reverse()
+    
+    return {
+        "grade": grade,
+        "verified": bool(grade),
+        "stats": {
+            "long_term_subscriptions": subs_5m_count,
+            "donations_count": donations_count,
+            "max_donation": round(max_donation, 2),
+            "total_donation": round(total_donation, 2),
+            "follows_count": follows_count,
+        },
+        "grades": grades_with_status,
+    }
+
+
+@api_router.get("/my/achievements")
+async def my_achievements(user: dict = Depends(get_current_user)):
+    return await compute_user_achievements(user["user_id"])
+
+
+@api_router.get("/users/{user_id}/achievements")
+async def public_achievements(user_id: str):
+    return await compute_user_achievements(user_id)
+
+
+# ============= STREAMER "PATH TO A PERFECT STREAMER" =============
+
+async def compute_streamer_path(user_id: str):
+    now = datetime.now(timezone.utc)
+    twelve_mo = now - timedelta(days=365)
+    
+    # 1. Total subscribers count (last 12 months)
+    subs_count = await db.subscriptions.count_documents({"streamer_id": user_id, "created_at": {"$gte": twelve_mo}})
+    
+    # 2. Total followers (last 12 months)
+    followers_count = await db.follows.count_documents({"following_id": user_id, "created_at": {"$gte": twelve_mo}})
+    # If no created_at on follows, count all
+    if followers_count == 0:
+        followers_count = await db.follows.count_documents({"following_id": user_id})
+    
+    # 3. Total broadcasting hours (sum duration across streams in last 12 months)
+    total_hours = 0.0
+    streams = await db.streams.find(
+        {"user_id": user_id, "broadcasting_started_at": {"$exists": True}},
+        {"_id": 0, "broadcasting_started_at": 1, "broadcasting_ended_at": 1, "started_at": 1, "ended_at": 1, "duration_seconds": 1}
+    ).to_list(5000)
+    for s in streams:
+        dur = s.get("duration_seconds")
+        if dur:
+            total_hours += float(dur) / 3600.0
+            continue
+        start = s.get("broadcasting_started_at") or s.get("started_at")
+        end = s.get("broadcasting_ended_at") or s.get("ended_at")
+        if isinstance(start, str):
+            try: start = datetime.fromisoformat(start.replace("Z", "+00:00"))
+            except: start = None
+        if isinstance(end, str):
+            try: end = datetime.fromisoformat(end.replace("Z", "+00:00"))
+            except: end = None
+        if start and end:
+            if start.tzinfo is None: start = start.replace(tzinfo=timezone.utc)
+            if end.tzinfo is None: end = end.replace(tzinfo=timezone.utc)
+            if start >= twelve_mo:
+                total_hours += max(0, (end - start).total_seconds() / 3600.0)
+    
+    # 4. Unique chatters (last 12 months) — from stream_chatters collection
+    unique_chatters = await db.stream_chatters.count_documents({"streamer_id": user_id, "last_seen": {"$gte": twelve_mo}})
+    if unique_chatters == 0:
+        # fallback: distinct user_ids from chat_messages on their streams
+        stream_ids = [s.get("stream_id") for s in await db.streams.find({"user_id": user_id}, {"_id": 0, "stream_id": 1}).to_list(2000) if s.get("stream_id")]
+        if stream_ids:
+            distinct = await db.chat_messages.distinct("user_id", {"stream_id": {"$in": stream_ids}, "created_at": {"$gte": twelve_mo}})
+            unique_chatters = len([u for u in distinct if u and u != "anonymous"])
+    
+    missions = [
+        {"id": "subs_50",       "label": "Reach 50 subscribers in the last 12 months",         "required": 50,  "current": subs_count,      "done": subs_count >= 50},
+        {"id": "followers_500", "label": "Reach 500 followers in the last 12 months",          "required": 500, "current": followers_count, "done": followers_count >= 500},
+        {"id": "hours_300",     "label": "Stream 300 hours connected with OBS in the last 12 months", "required": 300, "current": round(total_hours, 1), "done": total_hours >= 300},
+        {"id": "chatters_500",  "label": "500 unique users have written in your chat in the last 12 months", "required": 500, "current": unique_chatters, "done": unique_chatters >= 500},
+    ]
+    return {"missions": missions, "all_done": all(m["done"] for m in missions)}
+
+
+@api_router.get("/my/streamer-path")
+async def my_streamer_path(user: dict = Depends(get_current_user)):
+    return await compute_streamer_path(user["user_id"])
+
+
+# ============= FOLLOWERS SIDEBAR =============
+
+@api_router.get("/my/following")
+async def list_my_following(limit: int = 20, offset: int = 0, user: dict = Depends(get_current_user)):
+    """Who the current user follows, live streamers first."""
+    follows = await db.follows.find({"follower_id": user["user_id"]}, {"_id": 0, "following_id": 1}).to_list(1000)
+    ids = [f["following_id"] for f in follows]
+    if not ids:
+        return {"total": 0, "items": []}
+    
+    users_docs = await db.users.find(
+        {"user_id": {"$in": ids}},
+        {"_id": 0, "password_hash": 0, "stream_key": 0}
+    ).to_list(1000)
+    
+    # Enrich with live stream info
+    for u in users_docs:
+        stream = await db.streams.find_one(
+            {"user_id": u["user_id"], "is_live": True, "broadcasting": True},
+            {"_id": 0, "stream_id": 1, "game_name": 1, "title": 1, "viewer_count": 1}
+        )
+        if stream:
+            u["is_live"] = True
+            u["active_stream_id"] = stream.get("stream_id")
+            u["game_name"] = stream.get("game_name") or ""
+            u["viewer_count"] = stream.get("viewer_count", 0)
+        else:
+            u["is_live"] = False
+    
+    # Live first, then alphabetical
+    users_docs.sort(key=lambda x: (not x.get("is_live"), (x.get("display_name") or x.get("username") or "").lower()))
+    total = len(users_docs)
+    paged = users_docs[offset: offset + limit]
+    return {"total": total, "items": paged, "offset": offset, "limit": limit}
+
+
+# ============= ADMIN OTHER SETTINGS =============
+
+@api_router.get("/admin/other-settings")
+async def admin_get_other_settings(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    cfg = await db.admin_config.find_one({"type": "other_settings"}, {"_id": 0})
+    if not cfg:
+        return {"type": "other_settings", "achievements_enabled": True, "path_enabled": True}
+    return cfg
+
+
+@api_router.put("/admin/other-settings")
+async def admin_save_other_settings(request: Request, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    body = await request.json()
+    doc = {
+        "type": "other_settings",
+        "achievements_enabled": bool(body.get("achievements_enabled", True)),
+        "path_enabled": bool(body.get("path_enabled", True)),
+        "updated_at": datetime.now(timezone.utc),
+    }
+    await db.admin_config.update_one({"type": "other_settings"}, {"$set": doc}, upsert=True)
+    return {"message": "Other settings saved", **{k: v for k, v in doc.items() if k != "updated_at"}}
+
+
+@api_router.get("/config/features")
+async def public_feature_flags():
+    """Public — exposes feature toggles to frontend."""
+    cfg = await db.admin_config.find_one({"type": "other_settings"}, {"_id": 0})
+    if not cfg:
+        return {"achievements_enabled": True, "path_enabled": True}
+    return {
+        "achievements_enabled": cfg.get("achievements_enabled", True),
+        "path_enabled": cfg.get("path_enabled", True),
+    }
+
+
+# ============= STREAMER AD OPT-OUT =============
+
+@api_router.get("/my/ad-opt-out")
+async def get_my_ad_opt_out(user: dict = Depends(get_current_user)):
+    cfg = await db.streamer_ad_prefs.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    return {"opt_out": bool(cfg and cfg.get("opt_out"))}
+
+
+@api_router.put("/my/ad-opt-out")
+async def put_my_ad_opt_out(request: Request, user: dict = Depends(get_current_user)):
+    body = await request.json()
+    await db.streamer_ad_prefs.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"user_id": user["user_id"], "opt_out": bool(body.get("opt_out", False)), "updated_at": datetime.now(timezone.utc)}},
+        upsert=True,
+    )
+    return {"message": "Updated", "opt_out": bool(body.get("opt_out", False))}
 
 
 # Include the router

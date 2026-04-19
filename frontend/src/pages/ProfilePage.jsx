@@ -5,6 +5,8 @@ import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Button } from '../components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import StreamCard from '../components/StreamCard';
+import AchievementsSection from '../components/AchievementsSection';
+import VerifiedBadge from '../components/VerifiedBadge';
 import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'sonner';
 import axios from 'axios';
@@ -18,6 +20,7 @@ export default function ProfilePage() {
   const [bioText, setBioText] = useState('');
   const [profile, setProfile] = useState(null);
   const [streams, setStreams] = useState([]);
+  const [profileGrade, setProfileGrade] = useState(null);
   const [following, setFollowing] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -34,6 +37,12 @@ export default function ProfilePage() {
         const streamsRes = await axios.get(`${API}/api/streams`);
         const userStreams = streamsRes.data.filter(s => s.username === username);
         setStreams(userStreams);
+
+        // Fetch achievements for verified badge
+        try {
+          const ach = await axios.get(`${API}/api/users/${response.data.user_id}/achievements`);
+          setProfileGrade(ach.data.grade || null);
+        } catch { /* ignore */ }
       } catch (error) {
         console.error('Error fetching profile:', error);
       } finally {
@@ -174,8 +183,9 @@ export default function ProfilePage() {
           <div className="flex-1">
             <div className="flex items-start justify-between">
               <div>
-                <h1 className="text-2xl lg:text-3xl font-bold text-white font-['Outfit']" data-testid="profile-name">
+                <h1 className="text-2xl lg:text-3xl font-bold text-white font-['Outfit'] flex items-center gap-2" data-testid="profile-name">
                   {profile.display_name || profile.username}
+                  {profileGrade && <VerifiedBadge grade={profileGrade} size="lg" />}
                 </h1>
                 <p className="text-[#A0A0AB]">@{profile.username}</p>
               </div>
@@ -307,6 +317,11 @@ export default function ProfilePage() {
             </div>
           </TabsContent>
         </Tabs>
+
+        {/* Achievements */}
+        <div className="mt-6 max-w-3xl">
+          <AchievementsSection userId={profile.user_id} />
+        </div>
       </div>
     </div>
   );
