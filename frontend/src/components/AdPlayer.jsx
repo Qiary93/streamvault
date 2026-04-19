@@ -3,6 +3,22 @@ import axios from 'axios';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
+// Lazy-load Google IMA SDK
+let _imaLoadPromise = null;
+const loadImaSdk = () => {
+  if (_imaLoadPromise) return _imaLoadPromise;
+  _imaLoadPromise = new Promise((resolve, reject) => {
+    if (window.google?.ima) { resolve(window.google.ima); return; }
+    const s = document.createElement('script');
+    s.src = 'https://imasdk.googleapis.com/js/sdkloader/ima3.js';
+    s.async = true;
+    s.onload = () => window.google?.ima ? resolve(window.google.ima) : reject(new Error('IMA SDK loaded but not available'));
+    s.onerror = () => reject(new Error('Failed to load IMA SDK'));
+    document.head.appendChild(s);
+  });
+  return _imaLoadPromise;
+};
+
 // Generate/persist a viewer key for impression deduplication
 const getViewerKey = () => {
   try {
@@ -118,6 +134,11 @@ export default function AdPlayer({ streamId, placement = 'live_pre_roll', onFini
         )}
         {ad.ad_type === 'html' && (
           <div ref={adRef} className="w-full h-full flex items-center justify-center" data-testid="ad-html" />
+        )}
+        {ad.ad_type === 'ima' && (
+          <div ref={imaContainerRef} className="w-full h-full relative" data-testid="ad-ima">
+            <video ref={imaVideoRef} className="w-full h-full object-contain" playsInline />
+          </div>
         )}
       </div>
       <div className="flex items-center justify-between px-4 py-2 bg-black/80 border-t border-white/10">

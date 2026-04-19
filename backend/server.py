@@ -2017,10 +2017,17 @@ async def get_my_subscribers(user: dict = Depends(get_current_user)):
 # ============= NOTIFICATION ENDPOINTS =============
 
 @api_router.get("/notifications")
-async def get_notifications(user: dict = Depends(get_current_user), limit: int = 20):
+async def get_notifications(user: dict = Depends(get_current_user), limit: int = 20, unread: bool = False):
+    query = {"user_id": user["user_id"]}
+    if unread:
+        query["read"] = False
     notifs = await db.notifications.find(
-        {"user_id": user["user_id"]}, {"_id": 0}
+        query, {"_id": 0}
     ).sort("created_at", -1).limit(limit).to_list(limit)
+    for n in notifs:
+        ca = n.get("created_at")
+        if isinstance(ca, datetime):
+            n["created_at"] = ca.isoformat()
     return notifs
 
 @api_router.get("/notifications/unread-count")
@@ -3139,14 +3146,64 @@ async def admin_update_ad_settings(request: Request, user: dict = Depends(get_cu
 
 @api_router.get("/ads/vast/resolve")
 async def resolve_vast(url: str):
-    """Fetches a VAST tag URL and returns the first MediaFile URL + duration (basic VAST 2/3/4 support)."""
-    if not url or not url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="Invalid VAST URL")
+    """Fetches a VAST tag URL and returns the first MediaFile URL + duration (basic VAST 2/3/4 support).
+    SSRF-hardened: only https:// URLs, blocks private/loopback/link-local IPs, rejects file:// and ftp://."""
+    if not url:
+        raise HTTPException(status_code=400, detail="URL required")
+    
+    # Scheme check
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(url)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid URL")
+    if p.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="Only http/https URLs are allowed")
+    if not p.hostname:
+        raise HTTPException(status_code=400, detail="Invalid URL (no host)")
+    
+    # Block private / loopback / link-local / localhost
+    import ipaddress
+    import socket
+    try:
+        addrs = socket.getaddrinfo(p.hostname, None)
+    except socket.gaierror:
+        raise HTTPException(status_code=400, detail="DNS resolution failed")
+    
+    for fam, _, _, _, sockaddr in addrs:
+        ip_str = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            raise HTTPException(status_code=400, detail="URL resolves to a non-public address")
+    
     try:
         import httpx
         import xml.etree.ElementTree as ET
-        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+        # No auto-redirects to internal hosts — we revalidate manually below
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
             res = await client.get(url)
+            # Follow up to 3 redirects, revalidating host each time
+            hops = 0
+            while res.status_code in (301, 302, 303, 307, 308) and hops < 3:
+                loc = res.headers.get("location", "")
+                if not loc:
+                    break
+                lp = urlparse(loc)
+                if lp.scheme not in ("http", "https") or not lp.hostname:
+                    raise HTTPException(status_code=400, detail="Redirect target invalid")
+                try:
+                    next_addrs = socket.getaddrinfo(lp.hostname, None)
+                except socket.gaierror:
+                    raise HTTPException(status_code=400, detail="Redirect DNS failed")
+                for _, _, _, _, sa in next_addrs:
+                    ip = ipaddress.ip_address(sa[0])
+                    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+                        raise HTTPException(status_code=400, detail="Redirect to non-public address")
+                res = await client.get(loc)
+                hops += 1
         if res.status_code != 200:
             raise HTTPException(status_code=502, detail=f"VAST fetch failed: {res.status_code}")
         
@@ -3859,12 +3916,215 @@ async def compute_user_achievements(user_id: str):
 
 @api_router.get("/my/achievements")
 async def my_achievements(user: dict = Depends(get_current_user)):
-    return await compute_user_achievements(user["user_id"])
+    data = await compute_user_achievements(user["user_id"])
+    await _detect_and_notify_grade_change(user["user_id"], data.get("grade"))
+    return data
 
 
 @api_router.get("/users/{user_id}/achievements")
 async def public_achievements(user_id: str):
-    return await compute_user_achievements(user_id)
+    data = await compute_user_achievements(user_id)
+    await _detect_and_notify_grade_change(user_id, data.get("grade"))
+    return data
+
+
+async def _detect_and_notify_grade_change(user_id: str, new_grade: Optional[str]):
+    """If the user's grade just improved, store it, create a level_up notification, and post to profile feed."""
+    if not new_grade:
+        return
+    cache = await db.user_grade_cache.find_one({"user_id": user_id}, {"_id": 0, "grade": 1})
+    prev_grade = cache.get("grade") if cache else None
+    ORDER = ["Beginner", "Intermediate", "Advanced", "Expert"]
+    prev_idx = ORDER.index(prev_grade) if prev_grade in ORDER else -1
+    new_idx = ORDER.index(new_grade) if new_grade in ORDER else -1
+    if new_idx > prev_idx:
+        await db.user_grade_cache.update_one(
+            {"user_id": user_id},
+            {"$set": {"user_id": user_id, "grade": new_grade, "updated_at": datetime.now(timezone.utc)}},
+            upsert=True,
+        )
+        # Notification
+        await db.notifications.insert_one({
+            "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+            "user_id": user_id,
+            "type": "level_up",
+            "message": f"🎉 You reached {new_grade}!",
+            "data": {"grade": new_grade, "previous_grade": prev_grade},
+            "read": False,
+            "created_at": datetime.now(timezone.utc),
+        })
+        # Profile feed post
+        await db.profile_feed.insert_one({
+            "post_id": f"post_{uuid.uuid4().hex[:12]}",
+            "user_id": user_id,
+            "type": "level_up",
+            "content": f"Achieved {new_grade} grade on StreamVault! 🏆",
+            "data": {"grade": new_grade},
+            "created_at": datetime.now(timezone.utc),
+        })
+
+
+# ============= PROFILE FEED =============
+
+@api_router.get("/users/{user_id}/feed")
+async def get_user_feed(user_id: str, limit: int = 20, offset: int = 0):
+    total = await db.profile_feed.count_documents({"user_id": user_id})
+    items = await db.profile_feed.find({"user_id": user_id}, {"_id": 0}).sort("created_at", -1).skip(offset).limit(limit).to_list(limit)
+    # Serialize datetimes
+    for it in items:
+        ca = it.get("created_at")
+        if isinstance(ca, datetime):
+            it["created_at"] = ca.isoformat()
+    return {"total": total, "items": items, "offset": offset, "limit": limit}
+
+
+@api_router.post("/my/feed")
+async def post_my_feed(request: Request, user: dict = Depends(get_current_user)):
+    body = await request.json()
+    content = str(body.get("content", ""))[:500].strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Content required")
+    post = {
+        "post_id": f"post_{uuid.uuid4().hex[:12]}",
+        "user_id": user["user_id"],
+        "type": "text",
+        "content": content,
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.profile_feed.insert_one(post)
+    # Exclude mongo-injected _id from response
+    return {
+        "post_id": post["post_id"],
+        "user_id": post["user_id"],
+        "type": post["type"],
+        "content": post["content"],
+        "created_at": post["created_at"].isoformat(),
+    }
+
+
+@api_router.delete("/my/feed/{post_id}")
+async def delete_my_feed(post_id: str, user: dict = Depends(get_current_user)):
+    res = await db.profile_feed.delete_one({"post_id": post_id, "user_id": user["user_id"]})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return {"message": "Deleted"}
+
+
+# ============= LEADERBOARDS =============
+
+@api_router.get("/leaderboard/donors")
+async def leaderboard_donors(streamer_id: Optional[str] = None, period: str = "all", limit: int = 10):
+    """Top donors overall, or for a specific streamer. period = all|month|week."""
+    now = datetime.now(timezone.utc)
+    match = {}
+    if streamer_id:
+        match["streamer_id"] = streamer_id
+    if period == "month":
+        match["created_at"] = {"$gte": now - timedelta(days=30)}
+    elif period == "week":
+        match["created_at"] = {"$gte": now - timedelta(days=7)}
+    
+    pipeline = [
+        {"$match": match} if match else {"$match": {}},
+        {"$group": {"_id": "$user_id", "total": {"$sum": "$amount"}, "count": {"$sum": 1}}},
+        {"$sort": {"total": -1}},
+        {"$limit": max(1, min(100, limit))},
+    ]
+    rows = await db.donations.aggregate(pipeline).to_list(limit)
+    
+    result = []
+    rank = 1
+    for r in rows:
+        uid = r["_id"]
+        if not uid:
+            continue
+        u = await db.users.find_one({"user_id": uid}, {"_id": 0, "username": 1, "display_name": 1, "avatar_url": 1})
+        grade_cache = await db.user_grade_cache.find_one({"user_id": uid}, {"_id": 0, "grade": 1})
+        result.append({
+            "rank": rank,
+            "user_id": uid,
+            "username": u.get("username") if u else "unknown",
+            "display_name": u.get("display_name") if u else None,
+            "avatar_url": u.get("avatar_url") if u else None,
+            "grade": (grade_cache or {}).get("grade"),
+            "total": round(r.get("total", 0), 2),
+            "count": r.get("count", 0),
+        })
+        rank += 1
+    return {"period": period, "streamer_id": streamer_id, "items": result}
+
+
+@api_router.get("/leaderboard/subscribers")
+async def leaderboard_subscribers(streamer_id: Optional[str] = None, limit: int = 10):
+    """Top streamers by subscriber count, or top subscribers for a specific streamer."""
+    if streamer_id:
+        subs = await db.subscriptions.find({"streamer_id": streamer_id, "status": "active"}, {"_id": 0, "user_id": 1, "created_at": 1, "started_at": 1}).to_list(1000)
+        # Group by user
+        by_user = {}
+        for s in subs:
+            uid = s.get("user_id")
+            if not uid: continue
+            by_user[uid] = by_user.get(uid, 0) + 1
+        ranked = sorted(by_user.items(), key=lambda x: x[1], reverse=True)[:limit]
+        items = []
+        rank = 1
+        for uid, cnt in ranked:
+            u = await db.users.find_one({"user_id": uid}, {"_id": 0, "username": 1, "display_name": 1, "avatar_url": 1})
+            items.append({"rank": rank, "user_id": uid, "username": u.get("username") if u else "", "display_name": u.get("display_name") if u else None, "avatar_url": u.get("avatar_url") if u else None, "months": cnt})
+            rank += 1
+        return {"streamer_id": streamer_id, "items": items}
+    else:
+        # Top streamers platform-wide by active sub count
+        pipeline = [
+            {"$match": {"status": "active"}},
+            {"$group": {"_id": "$streamer_id", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
+            {"$limit": limit},
+        ]
+        rows = await db.subscriptions.aggregate(pipeline).to_list(limit)
+        items = []
+        rank = 1
+        for r in rows:
+            uid = r["_id"]
+            if not uid: continue
+            u = await db.users.find_one({"user_id": uid}, {"_id": 0, "username": 1, "display_name": 1, "avatar_url": 1})
+            items.append({"rank": rank, "user_id": uid, "username": u.get("username") if u else "", "display_name": u.get("display_name") if u else None, "avatar_url": u.get("avatar_url") if u else None, "count": r["count"]})
+            rank += 1
+        return {"items": items}
+
+
+# ============= GAMES AUTOCOMPLETE =============
+
+_POPULAR_GAMES = [
+    "Grand Theft Auto V", "League of Legends", "VALORANT", "Fortnite", "Counter-Strike 2",
+    "Minecraft", "Call of Duty: Warzone", "Call of Duty: Modern Warfare III", "World of Warcraft",
+    "EA Sports FC 25", "EA Sports FC 24", "Dota 2", "Apex Legends", "Rocket League",
+    "Rust", "Overwatch 2", "Elden Ring", "Pokémon Scarlet", "Pokémon Violet",
+    "Dark and Darker", "Marvel Rivals", "PUBG: Battlegrounds", "Escape From Tarkov",
+    "Path of Exile", "Path of Exile 2", "Stellar Blade", "Baldur's Gate 3",
+    "The Finals", "Helldivers 2", "Street Fighter 6", "Tekken 8", "FIFA 23",
+    "Red Dead Redemption 2", "Cyberpunk 2077", "GTA Online", "NBA 2K25",
+    "Madden NFL 25", "Diablo IV", "Hearthstone", "Teamfight Tactics", "Warframe",
+    "Destiny 2", "Final Fantasy XIV", "RuneScape", "OSRS", "Lost Ark",
+    "Genshin Impact", "Honkai: Star Rail", "Wuthering Waves", "Among Us",
+    "Fall Guys", "Dead by Daylight", "ARK: Survival Ascended", "Palworld",
+    "Enshrouded", "Last Epoch", "Deep Rock Galactic", "Sea of Thieves",
+    "Valheim", "Terraria", "Stardew Valley", "Factorio", "Cities: Skylines II",
+    "Microsoft Flight Simulator", "iRacing", "Forza Horizon 5", "Assetto Corsa",
+    "Black Myth: Wukong", "Once Human", "Throne and Liberty", "Marvel Snap",
+    "Chess", "Just Chatting", "Slots", "Poker", "Music", "Art", "IRL",
+]
+
+
+@api_router.get("/games/search")
+async def games_search(q: str = "", limit: int = 10):
+    """Autocomplete: returns matching games from a curated list. Case-insensitive substring match."""
+    q_lower = q.strip().lower()
+    if not q_lower:
+        return {"items": _POPULAR_GAMES[:limit]}
+    matches = [g for g in _POPULAR_GAMES if q_lower in g.lower()]
+    matches = matches[:max(1, min(50, limit))]
+    return {"items": matches}
 
 
 # ============= STREAMER "PATH TO A PERFECT STREAMER" =============

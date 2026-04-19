@@ -15,6 +15,7 @@ import MonetizationSection from '../components/MonetizationSection';
 import EmojiUploadSection from '../components/EmojiUploadSection';
 import ChatSettingsSection from '../components/ChatSettingsSection';
 import PathToPerfectStreamer from '../components/PathToPerfectStreamer';
+import GameNameAutocomplete from '../components/GameNameAutocomplete';
 import { toast } from 'sonner';
 import axios from 'axios';
 
@@ -460,13 +461,11 @@ export default function DashboardPage() {
 
                     <div>
                       <label className="text-sm text-[#A0A0AB] block mb-1.5">Game Name <span className="text-[#A0A0AB]/50">(optional)</span></label>
-                      <Input
+                      <GameNameAutocomplete
                         value={streamForm.game_name}
-                        onChange={(e) => setStreamForm(prev => ({ ...prev, game_name: e.target.value }))}
+                        onChange={(v) => setStreamForm(prev => ({ ...prev, game_name: v }))}
                         placeholder="e.g. Valorant, Minecraft, CS2..."
-                        maxLength={100}
-                        className="bg-[#1A1A24] border-white/10 text-white"
-                        data-testid="stream-game-input"
+                        testid="stream-game-input"
                       />
                     </div>
 

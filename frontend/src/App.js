@@ -23,6 +23,7 @@ import GameDiscoveryPage from './pages/GameDiscoveryPage';
 
 // Layout
 import Layout from './components/Layout';
+import LevelUpListener from './components/LevelUpListener';
 
 import './App.css';
 
@@ -94,6 +95,7 @@ function App() {
     <AuthProvider>
       <BrowserRouter>
         <AppRouter />
+        <LevelUpListener />
         <Toaster position="top-right" />
       </BrowserRouter>
     </AuthProvider>

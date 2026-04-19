@@ -1,0 +1,52 @@
+{
+  "summary": "Iteration 7 testing complete. Backend: 21/21 tests pass on /app/backend/tests/test_streamvault_v7.py — SSRF hardening (8 checks on /ads/vast/resolve: localhost/private IP/loopback/file://ftp://10.0.0.0/169.254.169.254/empty), Profile Feed CRUD + auth + 404-on-non-owner, Leaderboards (donors all/month/week + streamer_id filter, subscribers global + per-streamer), Games autocomplete (val → VALORANT+Valheim, empty q first-N, no match), Notifications unread filter, achievements grade field idempotency. Fixed 2 bugs while testing: (1) POST /api/my/feed returned 500 because MongoDB insert_one mutates the dict with a non-JSON-serializable _id ObjectId — now exclude _id in response dict. (2) AdminMonetization AD_TYPES list was missing the 'ima' option — added 'Google IMA SDK (VAST/VPAID)'. Frontend: ProfileFeed, DonorsLeaderboard, AchievementsSection, feed-input (own profile), lb-period-all/month/week toggles all render on /user/progamer; admin-monetization with new 'Google IMA SDK (VAST/VPAID)' option confirmed in slot-type-0 dropdown.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "Backend SSRF (8/8): /ads/vast/resolve returns 400 on localhost, 192.168.1.1, 127.0.0.1, file:///, ftp://, empty, 10.0.0.5, 169.254.169.254",
+    "Backend Profile Feed: POST without auth → 401/403; POST with empty content → 400; CREATE→GET→DELETE(non-owner 404)→DELETE(owner 200)→GET(absent) all pass",
+    "Backend Leaderboards: /leaderboard/donors returns {period, items[rank,user_id,username,display_name,avatar_url,grade,total,count]} — all,month,week; streamer_id filter echoes in response; /leaderboard/subscribers global returns rank+user_id items; per-streamer returns items with months",
+    "Backend Games: /games/search?q=val returns VALORANT + Valheim; empty q returns first N; no match returns empty list",
+    "Backend Notifications: ?unread=true returns only items with read=false",
+    "Backend Achievements: /my/achievements returns {grade, grades} — idempotent on repeat call",
+    "Frontend Profile /user/progamer: profile-feed ✓, donors-leaderboard ✓, achievements-section ✓, feed-input ✓ (own profile), lb-period-all/month/week all present; clicking lb-period-month doesn't error",
+    "Frontend Admin: admin-monetization ✓, add-ad-slot-btn creates new slot-type-0; Select dropdown now shows all 5 ad types including 'Google IMA SDK (VAST/VPAID)' ✓"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_streamvault_v7.py",
+    "/app/test_reports/pytest/pytest_results_v7.xml"
+  ],
+  "action_items": [
+    "(None blocking) GameNameAutocomplete UI flow not end-to-end verified via playwright because progamer currently has an active stream (myStream truthy) — the autocomplete lives inside the stream-creation form that's hidden while live. Component exists + rendered at DashboardPage.jsx:464 with testid='stream-game-input', and /api/games/search backend is verified passing. To visually verify the dropdown, log in as a demo user without an active stream, or end progamer's live stream first. Main agent can self-verify."
+  ],
+  "critical_code_review_comments": [
+    "POST /api/my/feed previously returned 500 because `{**post, ...}` included mongo's injected _id (ObjectId, non-JSON-serializable). Pattern repeats in several recently-added endpoints — audit any insert_one followed by returning the same dict. Fixed here by returning an explicit field-by-field dict.",
+    "AdminMonetization.jsx had an IMA branch (line 243) but the Select AD_TYPES list didn't include {value:'ima',label:'Google IMA SDK (VAST/VPAID)'} — the UI would never allow an admin to pick it. Fixed by adding the 5th option.",
+    "/api/leaderboard/donors + /leaderboard/subscribers do N+1 lookups to users collection (one per row). For top-10 lists this is fine; if limit grows to 100+ consider $lookup. Low priority.",
+    "/api/my/feed has no rate limit + 500 char cap only. Consider per-user throttle (e.g., max 5 posts/hour) to prevent spam. Not in review_request scope.",
+    "/api/leaderboard/subscribers per-streamer: groups by user_id counting sub documents, returning that count as 'months'. But if user has multiple active subs in one streamer they'd all be counted — typically should be the length-of-subscription, not sub count. Review business logic.",
+    "server.py grew to 4307 lines. Continue recommending router split (feed, leaderboard, games, vast_resolver)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_streamvault_v7.py (new, 21 tests all passing)",
+    "/app/backend/server.py (POST /api/my/feed: explicit dict construction to avoid mongo _id leak)",
+    "/app/frontend/src/components/AdminMonetization.jsx (added 'ima' option to AD_TYPES list)"
+  ],
+  "success_rate": {"backend": "100% (21/21)", "frontend": "100% of executed testid + integration checks"},
+  "test_credentials": {
+    "admin": "admin@streamvault.com / Admin123!",
+    "streamer": "progamer@demo.com / Demo123!"
+  },
+  "seed_data_creation": "Test created + self-cleaned 1 feed post ('TEST_feed_post_iter7 hello world') on progamer's profile. Test added 1 ad-slot via UI during IMA-option verification — left in place (admin can remove if not wanted).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 7 adds: SSRF-hardened /ads/vast/resolve (blocks private/loopback/link-local via ipaddress+socket, scheme-whitelist, redirect revalidation), Profile Feed (GET /users/{id}/feed, POST/DELETE /my/feed — 500-char cap, owner-only delete), Leaderboards (donors + subscribers, period filter), /games/search (curated list), /notifications?unread=true filter, _detect_and_notify_grade_change helper + user_grade_cache collection. Frontend: ProfileFeed+DonorsLeaderboard+AchievementsSection live on /user/:username; GameNameAutocomplete on Dashboard stream-setup (hidden when user is already live); AdPlayer uses Google IMA SDK for ad_type='ima' (lazy-loaded). LevelUpListener is mounted globally in App.js and polls silently — no UI errors observed. Progamer currently has an active stream; to test GameNameAutocomplete UI either end that stream or use a fresh demo user. IMA 'slot-ima-{i}' input was not clicked via automation due to Radix Select onValueChange not firing from JS .click() — verified dropdown option presence instead. Actual IMA ad playback not tested (needs real VAST/VPAID server).",
+  "rca of the issue": "Bug 1: POST /api/my/feed returning 500 'ObjectId is not iterable'. RCA: motor/pymongo insert_one() mutates the passed dict to add {'_id': ObjectId(...)}. The endpoint then did `return {**post, ...}` which leaked _id into the response, breaking FastAPI's jsonable_encoder. Mitigation: explicitly construct the response dict using only the known-safe fields (post_id, user_id, type, content, created_at.isoformat()). Bug 2: 'ima' ad_type option not pickable in AdminMonetization. RCA: AdminMonetization.jsx renders `slot.ad_type === 'ima'` but AD_TYPES array used by the Select dropdown omitted the ima entry — dead code branch from admin's perspective. Mitigation: added {value:'ima', label:'Google IMA SDK (VAST/VPAID)'} to AD_TYPES."
+}

@@ -20,6 +20,7 @@ const AD_TYPES = [
   { value: 'video', label: 'Video file (URL)' },
   { value: 'image', label: 'Image banner (URL)' },
   { value: 'vast', label: 'VAST tag URL (IMA/GAM compatible)' },
+  { value: 'ima', label: 'Google IMA SDK (VAST/VPAID)' },
 ];
 
 export default function AdminMonetization() {
@@ -234,9 +235,16 @@ export default function AdminMonetization() {
                 )}
                 {slot.ad_type === 'vast' && (
                   <div className="mb-3">
-                    <label className="text-xs text-[#A0A0AB] block mb-1">VAST tag URL (Google Ad Manager / IMA)</label>
+                    <label className="text-xs text-[#A0A0AB] block mb-1">VAST tag URL (server-side resolved)</label>
                     <Input value={slot.vast_url || ''} onChange={e => updateSlot(i, { vast_url: e.target.value })} placeholder="https://pubads.g.doubleclick.net/gampad/ads?..." className="bg-[#0F0F16] border-white/10 text-white" data-testid={`slot-vast-${i}`} />
                     <p className="text-xs text-[#A0A0AB] mt-1">The platform fetches this VAST XML server-side and plays the returned MediaFile creative.</p>
+                  </div>
+                )}
+                {slot.ad_type === 'ima' && (
+                  <div className="mb-3">
+                    <label className="text-xs text-[#A0A0AB] block mb-1">IMA ad tag URL (VAST/VPAID)</label>
+                    <Input value={slot.vast_url || ''} onChange={e => updateSlot(i, { vast_url: e.target.value })} placeholder="https://pubads.g.doubleclick.net/gampad/ads?iu=..." className="bg-[#0F0F16] border-white/10 text-white" data-testid={`slot-ima-${i}`} />
+                    <p className="text-xs text-[#A0A0AB] mt-1">Uses Google IMA SDK in the browser for full VAST/VPAID/adaptive-streaming/companion support.</p>
                   </div>
                 )}
 
