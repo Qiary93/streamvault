@@ -10,6 +10,15 @@ Build a Kick.com-style livestream platform: real-time video (LiveKit/WebRTC), We
 
 ## What's Implemented
 
+### Feb 2026 — IMA SDK, Level-up confetti, Profile feed, Leaderboards, Game autocomplete, SSRF hardening
+- **SSRF-hardened VAST resolver** — `/api/ads/vast/resolve` now blocks private / loopback / link-local / multicast / reserved IP addresses (including metadata `169.254.169.254`), rejects non-http(s) schemes, and revalidates redirect targets.
+- **Google IMA SDK ad type** — new `ad_type='ima'` in admin monetization. `AdPlayer.jsx` lazy-loads `ima3.js` and uses `AdsLoader` + `AdsManager` for full VAST/VPAID/adaptive-streaming/companion support.
+- **Level-up confetti + notifications + auto-post to profile feed** — Backend helper `_detect_and_notify_grade_change` detects grade improvements via a `user_grade_cache` collection, inserts a `level_up` notification, and auto-posts to `profile_feed`. Frontend `LevelUpListener` (mounted globally) polls achievements + unread notifications every 15s and fires `canvas-confetti` + a sonner toast when a new grade unlocks.
+- **Profile Feed** — `GET /api/users/{id}/feed` (public), `POST /api/my/feed`, `DELETE /api/my/feed/{id}`. Own-profile input on `ProfilePage`. Level-up posts render with a trophy icon.
+- **Top-donor leaderboards** — `GET /api/leaderboard/donors?streamer_id=X&period=all|month|week` with rank, avatar, verified grade badge, total amount, donation count. Streamer profile pages show a `DonorsLeaderboard` panel. Also `/leaderboard/subscribers` for top streamers/subscribers.
+- **Games autocomplete** — `GET /api/games/search?q=...` from a curated 70+ popular titles list. Dashboard stream-setup Game Name field now uses `GameNameAutocomplete` with keyboard navigation.
+- **Notifications endpoint** — now supports `?unread=true` filter for efficient polling.
+
 ### Feb 2026 — Achievements, Path, Followers sidebar, Real-time chat sync, VAST ads, Ad opt-out, Admin Other Settings
 - **Achievements** — 4 grades (Beginner/Intermediate/Advanced/Expert) with 3 missions each. Public `GET /api/users/{id}/achievements` + `GET /api/my/achievements`. Green triangle = done, red triangle = pending. Earning any grade awards a **Verified** badge next to the user's display name on profile.
 - **Path to a perfect streamer** — Dashboard section (under Recent Donations) showing 4 streamer missions (50 subs, 500 followers, 300 OBS hours, 500 unique chatters) over last 12 months. `GET /api/my/streamer-path`.
