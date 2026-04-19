@@ -1,94 +1,83 @@
-# StreamVault — Product Requirements Document (PRD)
+# StreamVault — PRD
 
 ## Original Problem Statement
-Create a livestream website like kick.com featuring real-time video streaming (LiveKit/WebRTC), live WebSocket chat, streamer profiles, VOD recording, custom tipping/donations, subscription tiers, and an admin panel.
-
-Latest feature set (Feb 2026):
-- Revenue analytics charts (daily/weekly/monthly trends)
-- Stripe Connect (Custom accounts) for automated payouts to streamers' bank accounts, with ON/OFF admin toggle
-- Ad-based monetization system (pay-per-view ads on live streams + VODs) with:
-  - Admin zone for ad activation + ad-code management
-  - CPM pricing table per placement (live pre/mid-roll, VOD pre/mid-roll)
-  - Streamer-side Monetization section showing ad earnings
-  - Admin-side Monetization section showing platform + streamer earnings and top earners
+Build a Kick.com-style livestream platform: real-time video (LiveKit/WebRTC), WebSocket chat, streamer profiles, VOD recording, custom tipping/donations, subscription tiers, admin panel. Plus incremental feature releases (revenue analytics, Stripe Connect payouts, ad monetization, emotes, chat moderation, achievements, streamer path, real-time chat rules sync, VAST ads, etc.).
 
 ## Tech Stack
-- Backend: FastAPI, Motor (MongoDB), LiveKit SDK, Stripe Python SDK 15.x, emergentintegrations
-- Frontend: React + Tailwind + shadcn/ui, Recharts, Phosphor icons, livekit-components-react
+- Backend: FastAPI, Motor (MongoDB), LiveKit SDK, Stripe 15.x (incl. Connect Custom + webhooks), emergentintegrations
+- Frontend: React + Tailwind + shadcn/ui + Recharts + Phosphor icons + livekit-components-react
 - Cloud: LiveKit Cloud, Stripe, Wasabi/S3, Emergent object storage
 
 ## What's Implemented
 
-### Feb 2026 — Subscriber emotes, Streamer emote upload, Chat settings, Clips, Stripe Connect webhook, Kick categories
-- **Kick-style categories** — seed_data now seeds 40+ Kick.com categories with `popularity` score, auto-cleans stale ones. `GET /api/categories?popular=true&limit=12` sorts by (live_stream_count, popularity).
-- **HomePage** — section renamed to "Top 12 Popular Categories" and fetches the top 12.
-- **20 subscriber-only emotes** — built-in blue :svBlueFire: / :svBlueHeart: / etc. exposed via `GET /api/emotes/subscriber` and surfaced in a new "Sub" tab inside `ChatEmojiPicker` (locked unless the viewer is subscribed to the current streamer).
-- **Streamer custom emote upload** — `POST/GET/PUT/DELETE /api/my/emotes`, max 20/streamer, each with `subscribers_only` flag. UI: `EmojiUploadSection.jsx` in Dashboard.
-- **Chat settings** — `GET/PUT /api/my/chat-settings` + public `GET /api/users/{id}/chat-settings`. UI: `ChatSettingsSection.jsx` (chat on/off toggle, rules textarea, Save button). ChatBox shows overlays: **chat-disabled-overlay** or **chat-rules-overlay** (accept-once, persisted via localStorage per stream).
-- **Clips** — `POST /api/streams/{id}/clip` with title + timestamp + captured thumbnail dataURL. `GET /api/streams/{id}/clips` and `GET /api/my/clips`.
-- **Stream player new controls** — PiP button (uses `<video>.requestPictureInPicture`), Clip button (captures frame + creates clip record), Theatre mode toggle (hides chat sidebar, expands video). Keyboard shortcuts: **C** (clip), **T** (theatre), **P** (PiP).
-- **Stripe Connect webhook** — `POST /api/webhook/stripe/connect` handles `account.updated`, `payout.paid`, `payout.failed` with full signature verification when `STRIPE_CONNECT_WEBHOOK_SECRET` env var is set (dev mode accepts any JSON). Triggers streamer notifications on verification and payout events.
+### Feb 2026 — Achievements, Path, Followers sidebar, Real-time chat sync, VAST ads, Ad opt-out, Admin Other Settings
+- **Achievements** — 4 grades (Beginner/Intermediate/Advanced/Expert) with 3 missions each. Public `GET /api/users/{id}/achievements` + `GET /api/my/achievements`. Green triangle = done, red triangle = pending. Earning any grade awards a **Verified** badge next to the user's display name on profile.
+- **Path to a perfect streamer** — Dashboard section (under Recent Donations) showing 4 streamer missions (50 subs, 500 followers, 300 OBS hours, 500 unique chatters) over last 12 months. `GET /api/my/streamer-path`.
+- **Recommended sidebar (home)** — filters to `broadcasting=true` + `is_live=true` only, shows a green dot, viewer count, and game name below the streamer name. `GET /api/recommended` returns enriched objects.
+- **Left sidebar** — "Categories" section replaced with "Followers (N)" listing users you follow. Show more / Show less (+10 / reset to 10). Live followers are sorted first with green dot + viewer count + game name. `GET /api/my/following`.
+- **Real-time chat rules sync** — when a streamer saves chat settings, the backend broadcasts `chat_settings_updated` to the live chat WebSocket. ChatBox re-fetches rules and forces re-acceptance on rule change.
+- **Chat moderation additions** — `followers_only`, `subscribers_only` toggles enforce in the WS chat path. `restricted_words` list with `restricted_words_mode` = `filter` (replace with `***`) or `block` (reject the message entirely).
+- **VAST ads** — new ad type `vast` with `vast_url` field. Platform fetches the VAST XML server-side via `GET /api/ads/vast/resolve` (basic VAST 2/3/4 MediaFile + Duration + ClickThrough parsing) and plays the returned creative.
+- **Streamer ad opt-out** — `GET/PUT /api/my/ad-opt-out`. When `opt_out=true`, `GET /api/ads/active?stream_id=X` returns no ad for that streamer's streams/VODs.
+- **Admin "Other Settings"** — above Monetization: toggles for `achievements_enabled` + `path_enabled`. Public `GET /api/config/features` exposes the toggles so frontend hides sections accordingly.
+- **Category images** — replaced broken Pexels URLs (VALORANT, Slots & Casino, Rust, Dark and Darker, Tarkov, Stellar Blade).
+- **Stripe Connect webhook** (previously added) — `/api/webhook/stripe/connect` handles `account.updated`, `payout.paid`, `payout.failed`.
 
-### Feb 2026 — Feature release (Revenue analytics, Stripe Connect, Ad Monetization)
-- **Revenue analytics** — backend `GET /api/my/revenue/analytics?period=daily|weekly|monthly` aggregates donations+subscriptions+ad earnings into time-bucketed series. Frontend `RevenueAnalyticsChart.jsx` renders via Recharts (Line + Bar toggle) in Dashboard.
-- **Stripe Connect Custom onboarding** — backend endpoints `POST /api/my/stripe-connect/create`, `GET /api/my/stripe-connect/status`, `DELETE /api/my/stripe-connect`. Frontend `StripeConnectSection.jsx` collects name, DOB, address, bank (routing/account or IBAN) + TOS and creates a Custom account via Stripe SDK with bank account token attached as external account.
-- **Admin payout settings toggle** — `GET/PUT /api/admin/payout-settings` (automated_enabled, platform_fee_percent). Toggle lives inside WithdrawRequests section. When ON, approving a withdrawal calls `stripe.Transfer.create` + `stripe.Payout.create` on the connected account; when OFF, approval stays manual.
-- **Ad monetization** — `GET/PUT /api/admin/ad-settings` (enabled, revenue_share_percent, cpm_rates per placement, ad_slots with HTML/video/image creatives). `GET /api/ads/active?placement=…` (public), `POST /api/ads/impression` (30s dedupe per viewer+slot, credits streamer+platform based on CPM/1000), `GET /api/my/ad-earnings`, `GET /api/admin/ad-earnings` (top streamers).
-- **Frontend Admin Panel** — `AdminMonetization.jsx` component: platform-ads on/off toggle, CPM table (4 placements), revenue share input, ad slot editor (HTML/video URL/image URL), top earners summary.
-- **Frontend Dashboard** — `MonetizationSection.jsx` (impressions + earnings by placement) + `RevenueAnalyticsChart.jsx` + `StripeConnectSection.jsx`.
-- **Ad playback** — `AdPlayer.jsx` renders a pre-roll overlay on StreamPage (live_pre_roll) and VODDetailPage (vod_pre_roll). Supports HTML ad codes (with script execution), video URL, or image URL with click-through. Records one impression per viewer per slot per 30s.
+### Earlier feature releases
+- Revenue analytics charts (Recharts line/bar, daily/weekly/monthly)
+- Stripe Connect Custom onboarding + automated payouts toggle in admin
+- Ad monetization (CPM table, ad creatives admin editor, streamer dashboard Monetization section, ad impression tracking with 30s dedup)
+- 20 blue subscriber-only emotes + streamer custom emote upload (max 20, subs-only flag)
+- Per-streamer chat settings + rules accept-gate
+- Clips (still-frame + marker MVP)
+- Stream player Picture-in-Picture / Clip (C) / Theatre (T) controls + keyboard shortcuts
+- LiveKit WebRTC, OBS WHIP ingress, VOD recording, subscription tiers, donations, revenue tracker + manual withdrawals
+- Full Kick-style category seed (40+)
+- HomePage "Top 12 Popular Categories"
 
-### Previously implemented
-- LiveKit Cloud + OBS WHIP ingress
-- WebSocket chat with moderation + emoji picker
-- Broadcast-gating visibility
-- VOD recording via Wasabi/S3
-- Profile avatar & cover photo uploads
-- Stream tags, HTML descriptions, thumbnail uploads
-- Dynamic subscription tiers + custom donations via Stripe
-- Revenue tracking + manual withdrawals
-- Admin: Site settings + S3 config + Withdrawal management
+## Key API Endpoints
+### Newest (Feb 2026 — this release)
+- `GET /api/recommended` (now returns only `broadcasting=true` live streams with viewer_count + game_name)
+- `GET /api/my/following`
+- `GET /api/my/achievements`, `GET /api/users/{id}/achievements`
+- `GET /api/my/streamer-path`
+- `GET/PUT /api/my/ad-opt-out`
+- `GET /api/ads/active?placement=X&stream_id=Y` (respects streamer opt-out)
+- `GET /api/ads/vast/resolve?url=X`
+- `GET/PUT /api/admin/other-settings`
+- `GET /api/config/features`
+- `GET/PUT /api/my/chat-settings` (now with followers_only, subscribers_only, restricted_words, restricted_words_mode)
 
-## Data Models
-
-### New collections (Feb 2026)
-- `stripe_connect_accounts`: `{user_id, stripe_account_id, country, currency, holder_name, bank_last4, verification_status, payouts_enabled, charges_enabled, currently_due, …}`
-- `ad_impressions`: `{impression_id, stream_id, streamer_id, slot_id, placement, cpm, streamer_earned, platform_earned, viewer_key, created_at}`
-- `admin_config` with new types: `payout_settings`, `ad_settings`
-
-### Existing
-- `users`, `streams`, `donations`, `subscriptions`, `withdrawals`, `streamer_tiers`, `recordings`, `chat_messages`, `notifications`, `admin_config` (site_settings, s3_storage)
-
-## Key API Endpoints (new)
-- `GET/PUT /api/admin/payout-settings`
-- `GET/PUT /api/admin/ad-settings`
-- `GET /api/admin/ad-earnings`
-- `GET /api/my/stripe-connect/status`
-- `POST /api/my/stripe-connect/create`
-- `DELETE /api/my/stripe-connect`
-- `GET /api/ads/active?placement=<placement>`
-- `POST /api/ads/impression`
-- `GET /api/my/ad-earnings`
-- `GET /api/my/revenue/analytics?period=daily|weekly|monthly`
+## Data Models — new/updated
+- `chat_settings`: adds `followers_only`, `subscribers_only`, `restricted_words`, `restricted_words_mode`
+- `admin_config` type `other_settings`: `{achievements_enabled, path_enabled}`
+- `streamer_ad_prefs`: `{user_id, opt_out}`
+- `stream_chatters`: `{streamer_id, user_id, first_seen, last_seen}` (tracks unique chatters for streamer Path mission)
 
 ## Test Credentials
-- See `/app/memory/test_credentials.md`
+See `/app/memory/test_credentials.md`
 
 ## Roadmap
 ### P1 (next)
-- Seed live streams + revenue data for fuller e2e Connect/ad tests
-- Stripe webhook handler for `account.updated`, `payout.paid`, `payout.failed`
-- Use IP + User-Agent hashing as a secondary dedupe key for ad impressions
-- Fix weekly bucket sorting for ISO year boundaries (edge case)
+- Rename minor admin/monetization testids to match spec
+- Seed `broadcasting=true` demo streams so live-only UI flows are easier to demo
+- SSRF hardening on `/ads/vast/resolve` (allow-list domains + block private IP ranges)
+- Ensure `created_at` is always set on `follows` documents
 
 ### P2 (later)
-- Stream sorting options (by viewers, newest)
-- Autocomplete for game names
-- Split `server.py` into routers (monetization, stripe, admin)
-- CSP/security audit of HTML ad code injection
+- Split `server.py` (now 4000+ lines) into routers (achievements, streamer_path, followers, admin_other_settings, ad_optout, vast_resolver, chat, emotes, clips, monetization, webhooks)
+- True last-30s MP4 clips via LiveKit Egress
+- Full IMA SDK / Google Ad Manager integration (current VAST resolver covers most tags)
+- Achievement progression notifications + email
+- Leaderboards for top donators / subscribers
 
-## Backlog
-- Real ad network integration (Google Ad Manager / IMA SDK)
+### Backlog
+- Stream sorting (viewers, newest), game name autocomplete
 - Payout scheduling (daily/weekly auto-sweeps)
-- Streamer-level opt-out toggle for ads
-- Ad analytics dashboard (CTR, fill-rate)
+- CSP review of HTML ad code injection surface
+
+## Project Health
+- Broken: None
+- Mocked: None (real LiveKit + Stripe + S3 + MongoDB)
+- Backend: 20/20 tests passed (iteration 6)
+- Frontend: all UI sections rendered correctly (iteration 6)
