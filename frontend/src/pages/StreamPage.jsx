@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import ChatBox from '../components/ChatBox';
 import { LiveKitViewer } from '../components/LiveKitPlayer';
 import AdPlayer from '../components/AdPlayer';
+import LiveTimer from '../components/LiveTimer';
 import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'sonner';
 import axios from 'axios';
@@ -275,11 +276,18 @@ export default function StreamPage() {
             </div>
           )}
           
-          {/* Live badge */}
+          {/* Live badge + broadcasting timer */}
           {stream.is_live && (
-            <div className="absolute top-4 left-4 flex items-center gap-2 px-3 py-1.5 bg-red-500 rounded text-sm font-bold text-white">
-              <span className="w-2 h-2 bg-white rounded-full live-indicator" />
-              LIVE
+            <div className="absolute top-4 left-4 flex items-center gap-2">
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-red-500 rounded text-sm font-bold text-white">
+                <span className="w-2 h-2 bg-white rounded-full live-indicator" />
+                LIVE
+              </div>
+              {stream.broadcasting && (
+                <div className="px-3 py-1.5 bg-black/70 backdrop-blur-sm rounded text-sm text-white" data-testid="player-live-timer">
+                  <LiveTimer startedAt={stream.broadcasting_started_at} compact testid="player-live-timer-value" />
+                </div>
+              )}
             </div>
           )}
 
@@ -588,7 +596,17 @@ export default function StreamPage() {
                           <span className="font-bold text-white">{tier.name}</span>
                           <span className="text-[#00E5FF] font-bold">${tier.amount}/mo</span>
                         </div>
-                        <p className="text-xs text-[#A0A0AB]">{tier.perks}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-xs text-[#A0A0AB] flex-1">{tier.perks}</p>
+                          {tier.badge_url && (
+                            <img
+                              src={tier.badge_url.startsWith('http') ? tier.badge_url : `${process.env.REACT_APP_BACKEND_URL}${tier.badge_url}`}
+                              alt="badge"
+                              className="w-8 h-8 object-contain rounded bg-white/5 border border-white/10 flex-shrink-0"
+                              data-testid={`tier-badge-${tier.tier_id || tier.id}`}
+                            />
+                          )}
+                        </div>
                       </button>
                     ))}
                     {streamerTiers.length === 0 && (

@@ -16,6 +16,7 @@ import EmojiUploadSection from '../components/EmojiUploadSection';
 import ChatSettingsSection from '../components/ChatSettingsSection';
 import PathToPerfectStreamer from '../components/PathToPerfectStreamer';
 import GameNameAutocomplete from '../components/GameNameAutocomplete';
+import LiveTimer from '../components/LiveTimer';
 import { toast } from 'sonner';
 import axios from 'axios';
 
@@ -89,6 +90,12 @@ export default function DashboardPage() {
         const res = await axios.get(`${API}/api/streams/${myStream.stream_id}/check-broadcast`);
         const wasBroadcasting = broadcasting;
         setBroadcasting(res.data.broadcasting);
+        // Keep myStream in sync with timer state
+        setMyStream(prev => prev ? {
+          ...prev,
+          broadcasting: res.data.broadcasting,
+          broadcasting_started_at: res.data.broadcasting ? (res.data.broadcasting_started_at || prev.broadcasting_started_at) : null,
+        } : prev);
         if (res.data.broadcasting && !wasBroadcasting) {
           toast.success('OBS connected! Your stream is now live to viewers.');
         }
@@ -240,11 +247,15 @@ export default function DashboardPage() {
             <div className={`p-2 rounded-lg ${myStream ? 'bg-green-500/10' : 'bg-[#292938]'}`}>
               <Broadcast className={`w-5 h-5 ${myStream ? 'text-green-400' : 'text-[#A0A0AB]'}`} />
             </div>
-            <div>
+            <div className="flex-1">
               <p className="text-sm text-[#A0A0AB]">Stream Status</p>
               <p className={`text-xl font-bold ${myStream ? 'text-green-400' : 'text-white'}`}>
                 {myStream ? 'LIVE' : 'Offline'}
               </p>
+              <div className="mt-1" data-testid="dashboard-live-timer">
+                <span className="text-[11px] text-[#A0A0AB] block">Time Live</span>
+                <LiveTimer startedAt={myStream?.broadcasting ? myStream?.broadcasting_started_at : null} testid="dashboard-live-timer-value" />
+              </div>
             </div>
           </div>
         </div>

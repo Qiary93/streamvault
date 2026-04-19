@@ -6,7 +6,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 
 const API = process.env.REACT_APP_BACKEND_URL;
-const MAX_EMOJIS = 20;
+const MAX_EMOJIS = 60;
 
 export default function EmojiUploadSection() {
   const [emotes, setEmotes] = useState([]);

@@ -20,6 +20,7 @@ import SubscriptionSuccess from './pages/SubscriptionSuccess';
 import AdminPage from './pages/AdminPage';
 import TagDiscoveryPage from './pages/TagDiscoveryPage';
 import GameDiscoveryPage from './pages/GameDiscoveryPage';
+import VerifyEmailPage from './pages/VerifyEmailPage';
 
 // Layout
 import Layout from './components/Layout';
@@ -58,6 +59,7 @@ function AppRouter() {
     <Routes>
       <Route path="/auth" element={<AuthPage />} />
       <Route path="/auth/callback" element={<AuthCallback />} />
+      <Route path="/verify-email" element={<VerifyEmailPage />} />
       
       <Route element={<Layout />}>
         <Route path="/" element={<HomePage />} />

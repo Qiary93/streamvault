@@ -342,6 +342,12 @@ async def register(user_data: UserCreate, request: Request):
     user_id = f"user_{uuid.uuid4().hex[:12]}"
     stream_key = f"sk_{secrets.token_hex(16)}"
     
+    # Check if SMTP is configured — if so, require email verification; if not, auto-verify
+    smtp_cfg = await db.admin_config.find_one({"type": "smtp"}, {"_id": 0})
+    smtp_enabled = bool(smtp_cfg and smtp_cfg.get("enabled") and smtp_cfg.get("host") and smtp_cfg.get("from_email"))
+    
+    verification_token = secrets.token_urlsafe(32) if smtp_enabled else None
+    
     user_doc = {
         "user_id": user_id,
         "email": email,
@@ -355,11 +361,27 @@ async def register(user_data: UserCreate, request: Request):
         "following_count": 0,
         "is_streaming": False,
         "stream_key": stream_key,
+        "email_verified": not smtp_enabled,
+        "verification_token": verification_token,
+        "verification_sent_at": datetime.now(timezone.utc) if smtp_enabled else None,
         "created_at": datetime.now(timezone.utc)
     }
     
     await db.users.insert_one(user_doc)
     
+    # Send verification email if SMTP configured
+    if smtp_enabled and verification_token:
+        try:
+            await send_verification_email(email, user_doc["display_name"], verification_token)
+        except Exception as e:
+            logger.error(f"Email send failed for {email}: {e}")
+        return JSONResponse(content={
+            "message": "Account created. Please check your email to verify your address before logging in.",
+            "email": email,
+            "verification_required": True,
+        })
+    
+    # No SMTP → auto-verify + log in
     access_token = create_access_token(user_id, email)
     refresh_token = create_refresh_token(user_id)
     
@@ -369,11 +391,13 @@ async def register(user_data: UserCreate, request: Request):
         "username": username,
         "display_name": user_doc["display_name"],
         "role": "user",
-        "stream_key": stream_key
+        "stream_key": stream_key,
+        "email_verified": True,
     })
     response.set_cookie(key="access_token", value=access_token, httponly=True, secure=False, samesite="lax", max_age=900, path="/")
     response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=False, samesite="lax", max_age=604800, path="/")
     return response
+
 
 @api_router.post("/auth/login")
 async def login(credentials: UserLogin, request: Request):
@@ -385,6 +409,10 @@ async def login(credentials: UserLogin, request: Request):
     
     if not verify_password(credentials.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    # Block login if email not verified (only when SMTP is enabled)
+    if user.get("email_verified") is False:
+        raise HTTPException(status_code=403, detail="Please verify your email address before logging in. Check your inbox for the verification link.")
     
     access_token = create_access_token(user["user_id"], email)
     refresh_token = create_refresh_token(user["user_id"])
@@ -401,6 +429,56 @@ async def login(credentials: UserLogin, request: Request):
     response.set_cookie(key="access_token", value=access_token, httponly=True, secure=False, samesite="lax", max_age=900, path="/")
     response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=False, samesite="lax", max_age=604800, path="/")
     return response
+
+
+@api_router.post("/auth/verify-email")
+async def verify_email(request: Request):
+    body = await request.json()
+    token = str(body.get("token", "")).strip()
+    if not token or len(token) < 20:
+        raise HTTPException(status_code=400, detail="Invalid token")
+    
+    user = await db.users.find_one({"verification_token": token}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired verification token")
+    
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"email_verified": True}, "$unset": {"verification_token": ""}}
+    )
+    return {"message": "Email verified. You can now log in.", "email": user["email"]}
+
+
+@api_router.post("/auth/resend-verification")
+async def resend_verification(request: Request):
+    body = await request.json()
+    email = str(body.get("email", "")).lower().strip()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email required")
+    
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    if not user:
+        # Silently pretend success to avoid enumeration
+        return {"message": "If that email exists, a verification link was sent."}
+    
+    if user.get("email_verified"):
+        return {"message": "Email is already verified."}
+    
+    smtp_cfg = await db.admin_config.find_one({"type": "smtp"}, {"_id": 0})
+    if not (smtp_cfg and smtp_cfg.get("enabled")):
+        raise HTTPException(status_code=503, detail="Email verification is not configured on this instance.")
+    
+    new_token = secrets.token_urlsafe(32)
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"verification_token": new_token, "verification_sent_at": datetime.now(timezone.utc)}}
+    )
+    try:
+        await send_verification_email(email, user.get("display_name") or user.get("username"), new_token)
+    except Exception as e:
+        logger.error(f"Resend email failed: {e}")
+        raise HTTPException(status_code=500, detail="Could not send verification email")
+    return {"message": "Verification email re-sent."}
 
 @api_router.post("/auth/logout")
 async def logout():
@@ -933,12 +1011,26 @@ async def check_broadcast_status(stream_id: str):
         logger.info(f"Broadcast check for {stream_id}: ingress_status={status}, broadcasting={now_broadcasting}")
         
         if now_broadcasting != is_broadcasting:
+            update = {"broadcasting": now_broadcasting}
+            if now_broadcasting:
+                update["broadcasting_started_at"] = datetime.now(timezone.utc)
+                update["broadcasting_ended_at"] = None
+            else:
+                update["broadcasting_ended_at"] = datetime.now(timezone.utc)
             await db.streams.update_one(
                 {"stream_id": stream_id},
-                {"$set": {"broadcasting": now_broadcasting}}
+                {"$set": update}
             )
             if now_broadcasting:
                 logger.info(f"Stream {stream_id} is now broadcasting!")
+        
+        # Return broadcasting_started_at for timer display
+        if now_broadcasting:
+            fresh = await db.streams.find_one({"stream_id": stream_id}, {"_id": 0, "broadcasting_started_at": 1})
+            started_at = fresh.get("broadcasting_started_at") if fresh else None
+            if isinstance(started_at, datetime):
+                started_at = started_at.isoformat()
+            return {"broadcasting": True, "ingress_status": status, "broadcasting_started_at": started_at}
         
         return {"broadcasting": now_broadcasting, "ingress_status": status}
     except Exception as e:
@@ -1014,9 +1106,16 @@ async def set_broadcasting(stream_id: str, request: Request, user: dict = Depend
     body = await request.json()
     broadcasting = bool(body.get("broadcasting", False))
     
+    update = {"broadcasting": broadcasting}
+    if broadcasting:
+        update["broadcasting_started_at"] = datetime.now(timezone.utc)
+        update["broadcasting_ended_at"] = None
+    else:
+        update["broadcasting_ended_at"] = datetime.now(timezone.utc)
+    
     await db.streams.update_one(
         {"stream_id": stream_id},
-        {"$set": {"broadcasting": broadcasting}}
+        {"$set": update}
     )
     
     logger.info(f"Stream {stream_id} broadcasting manually set to {broadcasting}")
@@ -2424,26 +2523,51 @@ async def get_user_sub_tiers(user_id: str):
 @api_router.post("/my/subscription-tiers")
 async def save_my_sub_tiers(request: Request, user: dict = Depends(get_current_user)):
     body = await request.json()
-    tiers = body.get("tiers", [])
+    tiers_in = body.get("tiers", [])
+    
+    # Preserve badge_urls keyed by tier_id (if client sent them) — fall back to name match
+    existing = {t["tier_id"]: t for t in await db.streamer_tiers.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(50)}
+    by_name = {t["name"]: t for t in existing.values()}
     
     await db.streamer_tiers.delete_many({"user_id": user["user_id"]})
     
-    for t in tiers[:5]:
+    saved = []
+    for t in tiers_in[:5]:
         name = str(t.get("name", ""))[:50]
         amount = float(t.get("amount", 0))
         perks = str(t.get("perks", ""))[:200]
-        if name and amount > 0:
-            await db.streamer_tiers.insert_one({
-                "tier_id": f"tier_{uuid.uuid4().hex[:8]}",
-                "user_id": user["user_id"],
-                "name": name,
-                "amount": round(amount, 2),
-                "perks": perks,
-                "active": True,
-                "created_at": datetime.now(timezone.utc)
-            })
+        if not (name and amount > 0):
+            continue
+        # Reuse existing tier_id (to keep badge path stable) if possible
+        tier_id = t.get("tier_id") or (by_name.get(name, {}).get("tier_id")) or f"tier_{uuid.uuid4().hex[:8]}"
+        badge_url = (existing.get(tier_id) or by_name.get(name) or {}).get("badge_url")
+        if "badge_url" in t and not t["badge_url"]:
+            badge_url = None  # explicit removal
+        doc = {
+            "tier_id": tier_id,
+            "user_id": user["user_id"],
+            "name": name,
+            "amount": round(amount, 2),
+            "perks": perks,
+            "active": True,
+            "created_at": (existing.get(tier_id) or {}).get("created_at") or datetime.now(timezone.utc),
+        }
+        if badge_url:
+            doc["badge_url"] = badge_url
+        await db.streamer_tiers.insert_one(doc)
+        created = doc.get("created_at")
+        saved.append({
+            "tier_id": doc["tier_id"],
+            "user_id": doc["user_id"],
+            "name": doc["name"],
+            "amount": doc["amount"],
+            "perks": doc["perks"],
+            "active": doc["active"],
+            "created_at": created.isoformat() if isinstance(created, datetime) else created,
+            **({"badge_url": doc["badge_url"]} if doc.get("badge_url") else {}),
+        })
     
-    return {"message": "Subscription tiers saved"}
+    return {"message": "Subscription tiers saved", "tiers": saved}
 
 @api_router.get("/my/subscription-tiers")
 async def get_my_sub_tiers(user: dict = Depends(get_current_user)):
@@ -3507,10 +3631,10 @@ async def upload_my_emote(
     subscribers_only: bool = False,
     user: dict = Depends(get_current_user),
 ):
-    """Upload one emote. Max 20 per streamer. subscribers_only flag per emote."""
+    """Upload one emote. Max 60 per streamer. subscribers_only flag per emote."""
     count = await db.streamer_emotes.count_documents({"user_id": user["user_id"]})
-    if count >= 20:
-        raise HTTPException(status_code=400, detail="Maximum 20 emotes per streamer")
+    if count >= 60:
+        raise HTTPException(status_code=400, detail="Maximum 60 emotes per streamer")
     
     code = (code or "").strip()
     if not code or not code.startswith(":") or not code.endswith(":") or len(code) < 3 or len(code) > 30:
@@ -4282,6 +4406,162 @@ async def put_my_ad_opt_out(request: Request, user: dict = Depends(get_current_u
         upsert=True,
     )
     return {"message": "Updated", "opt_out": bool(body.get("opt_out", False))}
+
+
+# ============= SMTP & EMAIL =============
+
+import aiosmtplib
+from email.message import EmailMessage
+
+
+async def _send_email(to_email: str, subject: str, body_html: str, body_text: str = ""):
+    cfg = await db.admin_config.find_one({"type": "smtp"}, {"_id": 0})
+    if not (cfg and cfg.get("enabled") and cfg.get("host")):
+        raise RuntimeError("SMTP not configured")
+    
+    host = cfg["host"]
+    port = int(cfg.get("port", 587))
+    username = cfg.get("username", "")
+    password = cfg.get("password", "")
+    use_tls = bool(cfg.get("use_tls", True))
+    use_ssl = bool(cfg.get("use_ssl", False))
+    from_email = cfg.get("from_email", username or "noreply@streamvault.app")
+    from_name = cfg.get("from_name", "StreamVault")
+    
+    msg = EmailMessage()
+    msg["From"] = f"{from_name} <{from_email}>"
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg.set_content(body_text or "Please view this email in an HTML-capable client.")
+    msg.add_alternative(body_html, subtype="html")
+    
+    await aiosmtplib.send(
+        msg,
+        hostname=host,
+        port=port,
+        username=username or None,
+        password=password or None,
+        start_tls=use_tls and not use_ssl,
+        use_tls=use_ssl,
+        timeout=15,
+    )
+
+
+async def send_verification_email(to_email: str, display_name: str, token: str):
+    frontend = os.environ.get("FRONTEND_URL") or os.environ.get("REACT_APP_BACKEND_URL", "https://streamvault.app")
+    verify_url = f"{frontend.rstrip('/')}/verify-email?token={token}"
+    subject = "Verify your StreamVault email"
+    html = f"""
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#111;background:#fff;padding:24px;border-radius:8px;">
+      <h2 style="color:#00B3CC;">Welcome to StreamVault, {display_name}!</h2>
+      <p>Click the button below to verify your email address and activate your account.</p>
+      <p style="margin:24px 0;">
+        <a href="{verify_url}" style="background:#00E5FF;color:#000;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:700;">Verify Email</a>
+      </p>
+      <p style="font-size:12px;color:#666;">Or copy this link: <br>{verify_url}</p>
+      <p style="font-size:12px;color:#666;">If you didn't sign up, ignore this email.</p>
+    </div>
+    """
+    text = f"Welcome to StreamVault! Verify your email: {verify_url}"
+    await _send_email(to_email, subject, html, text)
+
+
+@api_router.get("/admin/smtp-settings")
+async def admin_get_smtp(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    cfg = await db.admin_config.find_one({"type": "smtp"}, {"_id": 0}) or {"type": "smtp"}
+    # Mask password
+    if cfg.get("password"):
+        cfg["password"] = "••••••••"
+    defaults = {"enabled": False, "host": "", "port": 587, "username": "", "password": "", "from_email": "", "from_name": "StreamVault", "use_tls": True, "use_ssl": False}
+    return {**defaults, **cfg}
+
+
+@api_router.put("/admin/smtp-settings")
+async def admin_save_smtp(request: Request, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    body = await request.json()
+    existing = await db.admin_config.find_one({"type": "smtp"}, {"_id": 0}) or {}
+    
+    # Keep existing password if the UI sent the masked placeholder
+    pwd_in = body.get("password", "")
+    if pwd_in == "••••••••" or pwd_in == "":
+        pwd_in = existing.get("password", "")
+    
+    doc = {
+        "type": "smtp",
+        "enabled": bool(body.get("enabled", False)),
+        "host": str(body.get("host", "")).strip(),
+        "port": int(body.get("port", 587)),
+        "username": str(body.get("username", "")).strip(),
+        "password": pwd_in,
+        "from_email": str(body.get("from_email", "")).strip(),
+        "from_name": str(body.get("from_name", "StreamVault")).strip(),
+        "use_tls": bool(body.get("use_tls", True)),
+        "use_ssl": bool(body.get("use_ssl", False)),
+        "updated_at": datetime.now(timezone.utc),
+    }
+    await db.admin_config.update_one({"type": "smtp"}, {"$set": doc}, upsert=True)
+    return {"message": "SMTP settings saved"}
+
+
+@api_router.post("/admin/smtp-test")
+async def admin_smtp_test(request: Request, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    body = await request.json()
+    to_email = str(body.get("to", "")).strip()
+    if not to_email or "@" not in to_email:
+        raise HTTPException(status_code=400, detail="Valid recipient email required")
+    try:
+        await _send_email(
+            to_email,
+            "StreamVault SMTP test",
+            "<p>This is a test email from StreamVault. If you received this, your SMTP is configured correctly.</p>",
+            "StreamVault SMTP test. If you received this, SMTP is configured correctly."
+        )
+        return {"message": f"Test email sent to {to_email}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Send failed: {str(e)}")
+
+
+# ============= TIER BADGE UPLOAD =============
+
+@api_router.post("/my/tiers/{tier_id}/badge")
+async def upload_tier_badge(tier_id: str, file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """Upload a 32x32 badge image for a subscription tier."""
+    tier = await db.streamer_tiers.find_one({"tier_id": tier_id, "user_id": user["user_id"]})
+    if not tier:
+        raise HTTPException(status_code=404, detail="Tier not found")
+    
+    content = await file.read()
+    if len(content) > 256 * 1024:
+        raise HTTPException(status_code=400, detail="Badge must be ≤ 256KB")
+    
+    content_type = file.content_type or "image/png"
+    ext = content_type.split("/")[-1]
+    badge_path = f"tier_badges/{user['user_id']}/{tier_id}.{ext}"
+    put_object(badge_path, content, content_type)
+    badge_url = f"/api/files/{badge_path}"
+    
+    await db.streamer_tiers.update_one(
+        {"tier_id": tier_id, "user_id": user["user_id"]},
+        {"$set": {"badge_url": badge_url, "updated_at": datetime.now(timezone.utc)}}
+    )
+    return {"message": "Badge uploaded", "badge_url": badge_url}
+
+
+@api_router.delete("/my/tiers/{tier_id}/badge")
+async def delete_tier_badge(tier_id: str, user: dict = Depends(get_current_user)):
+    res = await db.streamer_tiers.update_one(
+        {"tier_id": tier_id, "user_id": user["user_id"]},
+        {"$unset": {"badge_url": ""}}
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Tier not found")
+    return {"message": "Badge removed"}
 
 
 # Include the router

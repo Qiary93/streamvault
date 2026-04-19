@@ -7,15 +7,13 @@ const API = process.env.REACT_APP_BACKEND_URL;
 
 export default function ChatEmojiPicker({ onSelect, streamerId, isSubscribed = false }) {
   const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState('custom'); // 'custom' | 'subs' | 'streamer' | 'standard'
+  const [tab, setTab] = useState('custom'); // 'custom' | 'streamer' | 'standard'
   const [emotes, setEmotes] = useState([]);
-  const [subEmotes, setSubEmotes] = useState([]);
   const [streamerEmotes, setStreamerEmotes] = useState([]);
   const pickerRef = useRef(null);
 
   useEffect(() => {
     axios.get(`${API}/api/emotes`).then(r => setEmotes(r.data)).catch(() => {});
-    axios.get(`${API}/api/emotes/subscriber`).then(r => setSubEmotes(r.data)).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -62,7 +60,6 @@ export default function ChatEmojiPicker({ onSelect, streamerId, isSubscribed = f
           {/* Tabs */}
           <div className="flex border-b border-white/10">
             <TabBtn id="custom" label="SV" />
-            <TabBtn id="subs" label="Sub" />
             {streamerEmotes.length > 0 && <TabBtn id="streamer" label="Streamer" />}
             <TabBtn id="standard" label="Emoji" />
           </div>
@@ -80,34 +77,6 @@ export default function ChatEmojiPicker({ onSelect, streamerId, isSubscribed = f
                   <img src={emote.url} alt={emote.name} className="w-6 h-6" />
                 </button>
               ))}
-            </div>
-          )}
-
-          {tab === 'subs' && (
-            <div>
-              {!isSubscribed && (
-                <div className="p-3 bg-[#00E5FF]/5 border-b border-[#00E5FF]/20 flex items-center gap-2 text-xs text-[#00E5FF]">
-                  <Lock className="w-4 h-4" /> Subscribe to this channel to unlock these emotes.
-                </div>
-              )}
-              <div className="p-3 grid grid-cols-8 gap-1.5 max-h-48 overflow-y-auto">
-                {subEmotes.map((emote) => {
-                  const locked = !isSubscribed;
-                  return (
-                    <button
-                      key={emote.code}
-                      onClick={() => { if (!locked) { onSelect(emote.code); setOpen(false); } }}
-                      disabled={locked}
-                      className={`w-8 h-8 flex items-center justify-center rounded transition-colors relative ${locked ? 'opacity-40 cursor-not-allowed' : 'hover:bg-[#00E5FF]/10'}`}
-                      title={emote.name + (locked ? ' (subscriber only)' : '')}
-                      data-testid={`sub-emote-${emote.code}`}
-                    >
-                      <img src={emote.url} alt={emote.name} className="w-6 h-6" />
-                      {locked && <Lock className="w-2.5 h-2.5 text-white absolute bottom-0 right-0" />}
-                    </button>
-                  );
-                })}
-              </div>
             </div>
           )}
 

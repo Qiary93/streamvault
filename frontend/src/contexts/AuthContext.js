@@ -47,6 +47,10 @@ export function AuthProvider({ children }) {
       { email, username, password, display_name: displayName },
       { withCredentials: true }
     );
+    // If verification_required, don't setUser (account not activated yet)
+    if (response.data?.verification_required) {
+      return response.data;
+    }
     setUser(response.data);
     return response.data;
   };

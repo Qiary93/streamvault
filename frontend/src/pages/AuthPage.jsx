@@ -52,9 +52,14 @@ export default function AuthPage() {
         toast.success('Welcome back!');
         navigate('/');
       } else {
-        await register(formData.email, formData.username, formData.password, formData.displayName);
-        toast.success('Account created successfully!');
-        navigate('/');
+        const res = await register(formData.email, formData.username, formData.password, formData.displayName);
+        if (res?.verification_required) {
+          toast.success('Verification email sent! Check your inbox to activate your account.', { duration: 7000 });
+          setMode('login');
+        } else {
+          toast.success('Account created successfully!');
+          navigate('/');
+        }
       }
     } catch (error) {
       toast.error(formatApiErrorDetail(error.response?.data?.detail) || error.message);

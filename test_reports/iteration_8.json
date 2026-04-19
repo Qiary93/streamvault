@@ -1,0 +1,62 @@
+{
+  "summary": "Iteration 8 backend: 17/17 passed, 1 skipped in /app/backend/tests/test_streamvault_v8.py — SMTP admin GET/PUT/test (admin-only, defaults, password-masked, masked placeholder preserves existing, empty preserves existing, invalid-email 400, fake-host 500), email verification flow (SMTP-enabled register returns verification_required+no cookies, login 403 until verified, invalid token 400, resend-already-verified 200, auto-verify when SMTP disabled), emote limit raised to 60 (verified 21st succeeds), tier badge invalid-tier 404, tier badge upload+persist-across-save+delete, check-broadcast shape. Frontend: admin-smtp-settings now renders above admin-monetization (fixed missing import), dashboard-live-timer + dashboard-live-timer-value present showing 'Time Live --:--', Badge 32x32 UI text present on dashboard, EmojiUploadSection shows 60 limit, /verify-email?token=invalid123 shows 'Verification failed' + resend input. Fixed TWO bugs while testing: (1) AdminPage.jsx was missing `import AdminSmtpSettings` — /admin page white-screened with 'AdminSmtpSettings is not defined' ReferenceError. (2) POST /api/my/subscription-tiers returned 500 because `saved.append({**doc, ...})` leaked MongoDB's injected _id ObjectId (same pattern already flagged in iter 7). Fixed by constructing response dict explicitly. All review_request items verified.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/auth/resend-verification", "issue": "For seeded users missing `email_verified` field (None, not True), resend does NOT hit 'already verified' branch and tries to send — inconsistent with /auth/login which uses `is False` guard. Audit seed_data to ensure email_verified=True, or change check to `if user.get('email_verified') is not False`."},
+      {"endpoint": "POST /api/auth/resend-verification", "issue": "Returns 500 when SMTP send fails but does not revert the newly-written verification_token. Low priority."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "AdminSmtpSettings", "issues": ["Review_request mentioned 'TLS/SSL radios' but implementation uses two separate checkboxes (smtp-tls / smtp-ssl). Functionally correct (they are mutually exclusive via onChange), but radios would be clearer UX."]}
+    ]
+  },
+  "passed_tests": [
+    "Backend SMTP admin (8/8): non-admin 403, anon 401/403, GET defaults w/ all keys, PUT persists + password masked on re-GET, masked placeholder preserves existing, empty password preserves, test-endpoint rejects invalid email 400, test-endpoint 500 on fake host",
+    "Backend email verification (5/5 + 1 skipped): SMTP-enabled register returns verification_required:true without cookies, login blocked 403 with 'verify' msg, verify-email invalid token 400, resend already-verified 200 'already verified', register without SMTP auto-verifies email_verified:true+cookies",
+    "Backend emote limit (2/2): 21st emote succeeds, code path uses 60 not 20",
+    "Backend tier badges (2/2): invalid tier_id 404, upload→save-tiers preserves badge_url on same tier_id → delete removes badge_url",
+    "Backend check-broadcast (1/1): response includes broadcasting_started_at when broadcasting:true",
+    "Frontend /admin: admin-smtp-settings renders above admin-monetization with testids smtp-enabled-toggle/smtp-host/smtp-port/smtp-username/smtp-password/smtp-from-email/smtp-from-name/smtp-tls/smtp-ssl/smtp-save/smtp-test-to/smtp-test-send",
+    "Frontend dashboard: dashboard-live-timer + dashboard-live-timer-value present, text='Time Live --:--' when not broadcasting",
+    "Frontend dashboard: 'Badge 32×32' UI text present in SubscriptionTiersSettings",
+    "Frontend EmojiUploadSection: header says 'Upload up to 60 custom emojis' (proves MAX raised 20→60)",
+    "Frontend /verify-email?token=invalid123: 'Verification failed' heading + 'Invalid token' subtitle + Resend input + Resend button rendered"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_streamvault_v8.py",
+    "/app/test_reports/pytest/pytest_results_v8.xml"
+  ],
+  "action_items": [
+    "(FIXED by testing agent) AdminPage.jsx was missing `import AdminSmtpSettings from '../components/AdminSmtpSettings';` — /admin white-screened. Please review and confirm.",
+    "(FIXED by testing agent) POST /api/my/subscription-tiers leaked ObjectId via `{**doc,...}` causing 500. Same pattern as iter-7 /api/my/feed. Please audit ALL recently-added `insert_one(doc)` call-sites that then return/spread the same doc — e.g., /api/my/tiers/.../badge response is safe (explicit dict), but review: /api/my/subscription-tiers (fixed), /api/admin/smtp-settings PUT (uses update_one, safe), /api/auth/verify-email (uses update_one, safe), anywhere else using insert_one in server.py.",
+    "(Minor) resend-verification inconsistency for seeded users missing email_verified field — see backend_issues.minor.",
+    "(Minor) Consider replacing smtp-tls/smtp-ssl checkboxes with mutually-exclusive radios per review_request wording.",
+    "(Deferred from iter-7) Further audit of ObjectId leak pattern across all insert_one call-sites remains open."
+  ],
+  "critical_code_review_comments": [
+    "Missing import is a smoke-test gap: admin panel was completely broken (white screen). A basic 'admin page loads without runtime errors' playwright check in main agent's dev loop would have caught this before handoff.",
+    "The ObjectId leak pattern recurred again (iter-7 flagged it, iter-8 hit it elsewhere). Consider wrapping insert_one with a small helper that strips _id, or switch to always building the response dict explicitly.",
+    "verify-email page correctly handles invalid token with resend form. However the resend success path here calls /auth/resend-verification which will return 503 when SMTP disabled — VerifyEmailPage should display that message to the user (not tested UI, but review resend error handling).",
+    "Review_request spec mentioned 'TLS/SSL radios'. Implementation uses two checkboxes with JS mutual-exclusion. Functionally equivalent; consider Radio group for semantic HTML.",
+    "progamer seeded user has stale `verification_token` in DB from a previous test run — seed_admin/seed_demo should idempotently clear or set email_verified=True."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_streamvault_v8.py (new, 17 passed + 1 skipped)",
+    "/app/frontend/src/pages/AdminPage.jsx (added missing `import AdminSmtpSettings`)",
+    "/app/backend/server.py (POST /api/my/subscription-tiers: explicit response dict to avoid ObjectId leak)"
+  ],
+  "success_rate": {"backend": "100% (17/17 + 1 expected-skip)", "frontend": "100% of executed testid + integration checks"},
+  "test_credentials": {
+    "admin": "admin@streamvault.com / Admin123!",
+    "streamer": "progamer@demo.com / Demo123!"
+  },
+  "seed_data_creation": "Test registered + left in DB 2 test users (test_verify_*@example.com unverified, test_already_*@example.com + test_auto_*@example.com auto-verified). Also 1 TEST_SV3 SMTP config in admin_config now reset to enabled:false. Leftover test users prefix-match 'test_' — main agent can cleanup with `db.users.delete_many({'email': {'$regex': '^test_.*@example.com'}})`.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 8 added SMTP admin settings + email verification + tier badges + emote-limit 60 + LiveTimer on dashboard & stream. SMTP is DISABLED in DB after teardown (verified). AdminSmtpSettings import fix was applied by test agent. Review_request's 'TLS/SSL radios' spec deviation: implemented as checkboxes. Test file uses `params=` (query) not `data=` (form) for /api/my/emotes code+subscribers_only — matches frontend's URL-encoded approach. /api/my/subscription-tiers expects `amount` not `price` in tier objects.",
+  "rca of the issue": "Bug 1: /admin white-screen. RCA: AdminPage.jsx renders <AdminSmtpSettings/> but never imports it. React raises ReferenceError → error boundary shows 'Uncaught runtime errors'. Mitigation: added `import AdminSmtpSettings from '../components/AdminSmtpSettings';`. Bug 2: POST /api/my/subscription-tiers → 500 'ObjectId is not iterable'. RCA: motor insert_one mutates `doc` to add `_id:ObjectId(...)`; subsequent `saved.append({**doc, 'created_at': ...})` spreads that _id into response, FastAPI's jsonable_encoder crashes. Mitigation: construct response dict with explicit whitelisted fields (tier_id/user_id/name/amount/perks/active/created_at/badge_url)."
+}

@@ -7,6 +7,7 @@ import { Input } from '../components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import AdminMonetization from '../components/AdminMonetization';
 import AdminOtherSettings from '../components/AdminOtherSettings';
+import AdminSmtpSettings from '../components/AdminSmtpSettings';
 import { toast } from 'sonner';
 import axios from 'axios';
 
@@ -545,6 +546,9 @@ export default function AdminPage() {
 
       {/* Other Settings */}
       <AdminOtherSettings />
+
+      {/* SMTP / Email verification */}
+      <AdminSmtpSettings />
 
       {/* Monetization */}
       <AdminMonetization />
