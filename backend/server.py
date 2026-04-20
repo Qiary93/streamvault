@@ -473,7 +473,8 @@ async def resend_verification(request: Request):
     if user.get("email_verified") is not False:
         return {"message": "Email is already verified."}
     
-    # Rate limit: 60s between resend attempts per account
+    # Rate limit: 60s between resend attempts per account (persist the attempt
+    # timestamp BEFORE the SMTP-enabled check so it survives enable/disable toggles).
     last_sent = user.get("verification_sent_at")
     if isinstance(last_sent, str):
         try: last_sent = datetime.fromisoformat(last_sent.replace("Z", "+00:00"))
@@ -485,6 +486,12 @@ async def resend_verification(request: Request):
         if elapsed < 60:
             wait = int(60 - elapsed)
             raise HTTPException(status_code=429, detail=f"Please wait {wait}s before requesting another verification email.")
+    
+    # Persist the attempt timestamp NOW (even if SMTP is disabled) so the window is enforced consistently.
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"verification_sent_at": datetime.now(timezone.utc)}},
+    )
     
     smtp_cfg = await db.admin_config.find_one({"type": "smtp"}, {"_id": 0})
     if not (smtp_cfg and smtp_cfg.get("enabled")):
@@ -510,16 +517,12 @@ async def forgot_password(request: Request):
     if not email:
         raise HTTPException(status_code=400, detail="Email required")
     
-    smtp_cfg = await db.admin_config.find_one({"type": "smtp"}, {"_id": 0})
-    if not (smtp_cfg and smtp_cfg.get("enabled")):
-        raise HTTPException(status_code=503, detail="Password reset is not configured on this instance.")
-    
     user = await db.users.find_one({"email": email}, {"_id": 0})
     if not user:
         # Enumeration-safe response
         return {"message": "If an account with that email exists, a reset link has been sent."}
     
-    # Rate limit 60s
+    # Rate limit 60s (enforced regardless of SMTP state, for consistency)
     last = user.get("password_reset_sent_at")
     if isinstance(last, str):
         try: last = datetime.fromisoformat(last.replace("Z", "+00:00"))
@@ -528,6 +531,16 @@ async def forgot_password(request: Request):
         if last.tzinfo is None: last = last.replace(tzinfo=timezone.utc)
         if (datetime.now(timezone.utc) - last).total_seconds() < 60:
             return {"message": "If an account with that email exists, a reset link has been sent."}
+    
+    # Persist the attempt timestamp NOW so the rate limit is enforced even if SMTP is currently disabled.
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"password_reset_sent_at": datetime.now(timezone.utc)}},
+    )
+    
+    smtp_cfg = await db.admin_config.find_one({"type": "smtp"}, {"_id": 0})
+    if not (smtp_cfg and smtp_cfg.get("enabled")):
+        raise HTTPException(status_code=503, detail="Password reset is not configured on this instance.")
     
     token = secrets.token_urlsafe(32)
     expires = datetime.now(timezone.utc) + timedelta(minutes=60)
@@ -547,8 +560,34 @@ async def forgot_password(request: Request):
     return {"message": "If an account with that email exists, a reset link has been sent."}
 
 
+# Simple in-memory sliding-window IP rate limiter for reset-password (process-local).
+_RESET_PWD_IP_HITS: Dict[str, List[datetime]] = {}
+
+
+def _client_ip(request: Request) -> str:
+    # Respect X-Forwarded-For first (proxy) then fall back to the client address
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _check_reset_pwd_ip_rate_limit(ip: str, max_hits: int = 5, window_seconds: int = 900):
+    """Raise 429 if the same IP attempted > max_hits resets within window_seconds."""
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=window_seconds)
+    hits = [t for t in _RESET_PWD_IP_HITS.get(ip, []) if t >= cutoff]
+    if len(hits) >= max_hits:
+        raise HTTPException(status_code=429, detail="Too many reset attempts from this IP. Try again later.")
+    hits.append(now)
+    _RESET_PWD_IP_HITS[ip] = hits
+
+
 @api_router.post("/auth/reset-password")
 async def reset_password(request: Request):
+    # IP-level throttle — slows brute forcing of random tokens
+    _check_reset_pwd_ip_rate_limit(_client_ip(request))
+    
     body = await request.json()
     token = str(body.get("token", "")).strip()
     new_password = str(body.get("password", ""))
@@ -859,12 +898,19 @@ async def get_category(category_id: str):
 # ============= STREAM ROUTES =============
 
 @api_router.get("/streams")
-async def get_streams(category_id: Optional[str] = None, limit: int = 20, offset: int = 0):
+async def get_streams(category_id: Optional[str] = None, limit: int = 20, offset: int = 0, sort: str = "viewers"):
     query = {"is_live": True, "broadcasting": True}
     if category_id:
         query["category_id"] = category_id
     
-    streams = await db.streams.find(query, {"_id": 0, "whip_token": 0}).sort("viewer_count", -1).skip(offset).limit(limit).to_list(limit)
+    # Sort modes: viewers (default, desc), newest (started_at desc), oldest (started_at asc)
+    sort_key, sort_dir = {
+        "viewers": ("viewer_count", -1),
+        "newest": ("started_at", -1),
+        "oldest": ("started_at", 1),
+    }.get(sort, ("viewer_count", -1))
+    
+    streams = await db.streams.find(query, {"_id": 0, "whip_token": 0}).sort(sort_key, sort_dir).skip(offset).limit(limit).to_list(limit)
     
     for stream in streams:
         user = await db.users.find_one({"user_id": stream["user_id"]}, {"_id": 0, "username": 1, "display_name": 1, "avatar_url": 1})
@@ -1324,6 +1370,136 @@ async def heart_chat_message(stream_id: str, message_id: str, user: dict = Depen
         "hearts": hearts,
     })
     return {"message_id": message_id, "hearts": hearts, "hearted": hearted}
+
+
+# ============= RAID =============
+
+@api_router.post("/streams/{stream_id}/raid")
+async def start_raid(stream_id: str, request: Request, user: dict = Depends(get_current_user)):
+    """Streamer raids another live streamer — broadcasts raid_alert to own chat with 10s countdown,
+    and sends an incoming-raid banner to the target streamer's chat."""
+    # Verify caller owns this stream and is currently live+broadcasting
+    stream = await db.streams.find_one({"stream_id": stream_id}, {"_id": 0})
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    if stream["user_id"] != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Only the streamer can start a raid")
+    if not stream.get("is_live") or not stream.get("broadcasting"):
+        raise HTTPException(status_code=400, detail="You must be live and broadcasting to start a raid")
+    
+    body = await request.json()
+    target_username = str(body.get("target_username", "")).strip().lstrip("@")
+    if not target_username:
+        raise HTTPException(status_code=400, detail="target_username required")
+    if target_username.lower() == user["username"].lower():
+        raise HTTPException(status_code=400, detail="You can't raid yourself")
+    
+    target_user = await db.users.find_one(
+        {"username": target_username},
+        {"_id": 0, "user_id": 1, "username": 1, "display_name": 1, "avatar_url": 1}
+    )
+    if not target_user:
+        raise HTTPException(status_code=404, detail=f"User '{target_username}' not found")
+    
+    target_stream = await db.streams.find_one(
+        {"user_id": target_user["user_id"], "is_live": True, "broadcasting": True},
+        {"_id": 0, "stream_id": 1, "title": 1, "game_name": 1, "viewer_count": 1}
+    )
+    if not target_stream:
+        raise HTTPException(status_code=400, detail=f"{target_username} is not currently live")
+    
+    countdown_seconds = 10
+    raider_viewer_count = int(stream.get("viewer_count", 0) or 0)
+    raid_id = f"raid_{uuid.uuid4().hex[:10]}"
+    now = datetime.now(timezone.utc)
+    raid_doc = {
+        "raid_id": raid_id,
+        "source_user_id": user["user_id"],
+        "source_username": user["username"],
+        "source_display_name": user.get("display_name"),
+        "source_stream_id": stream_id,
+        "source_viewer_count": raider_viewer_count,
+        "target_user_id": target_user["user_id"],
+        "target_username": target_user["username"],
+        "target_stream_id": target_stream["stream_id"],
+        "created_at": now,
+    }
+    await db.raids.insert_one({**raid_doc})
+    raid_doc.pop("_id", None)
+    
+    # Broadcast to source stream — viewers will auto-redirect after countdown
+    source_payload = {
+        "message_id": raid_id,
+        "stream_id": stream_id,
+        "type": "raid_outgoing",
+        "raid_id": raid_id,
+        "target_username": target_user["username"],
+        "target_display_name": target_user.get("display_name") or target_user["username"],
+        "target_avatar_url": target_user.get("avatar_url"),
+        "target_stream_id": target_stream["stream_id"],
+        "target_stream_title": target_stream.get("title"),
+        "countdown_seconds": countdown_seconds,
+        "created_at": now.isoformat(),
+    }
+    try:
+        await db.chat_messages.insert_one({**source_payload})
+    except Exception as e:
+        logger.debug(f"raid_outgoing insert failed: {e}")
+    source_payload.pop("_id", None)
+    await chat_manager.broadcast(stream_id, source_payload)
+    
+    # Broadcast to target stream — welcome banner
+    target_payload = {
+        "message_id": f"{raid_id}_in",
+        "stream_id": target_stream["stream_id"],
+        "type": "raid_incoming",
+        "raid_id": raid_id,
+        "source_username": user["username"],
+        "source_display_name": user.get("display_name") or user["username"],
+        "source_avatar_url": user.get("avatar_url"),
+        "source_viewer_count": raider_viewer_count,
+        "created_at": now.isoformat(),
+    }
+    try:
+        await db.chat_messages.insert_one({**target_payload})
+    except Exception as e:
+        logger.debug(f"raid_incoming insert failed: {e}")
+    target_payload.pop("_id", None)
+    await chat_manager.broadcast(target_stream["stream_id"], target_payload)
+    
+    # Notify the target streamer
+    try:
+        await db.notifications.insert_one({
+            "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+            "user_id": target_user["user_id"],
+            "type": "raid",
+            "message": f"{user.get('display_name') or user['username']} is raiding you with {raider_viewer_count} viewer(s)!",
+            "data": {"raid_id": raid_id, "source_user_id": user["user_id"], "viewer_count": raider_viewer_count},
+            "read": False,
+            "created_at": now,
+        })
+    except Exception as e:
+        logger.debug(f"raid notification insert failed: {e}")
+    
+    return {
+        "raid_id": raid_id,
+        "target_username": target_user["username"],
+        "target_stream_id": target_stream["stream_id"],
+        "countdown_seconds": countdown_seconds,
+        "viewer_count": raider_viewer_count,
+    }
+
+
+@api_router.get("/raids/recent")
+async def my_recent_raids(user: dict = Depends(get_current_user), limit: int = 10):
+    """Return the current user's recent outgoing/incoming raids."""
+    items = await db.raids.find(
+        {"$or": [{"source_user_id": user["user_id"]}, {"target_user_id": user["user_id"]}]},
+        {"_id": 0},
+    ).sort("created_at", -1).limit(limit).to_list(limit)
+    return items
+
+
 
 
 
@@ -3512,8 +3688,17 @@ async def delete_my_stripe_connect(user: dict = Depends(get_current_user)):
 async def get_payout_settings(user: dict = Depends(get_current_user)):
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
-    cfg = await db.admin_config.find_one({"type": "payout_settings"}, {"_id": 0})
-    return cfg or {"type": "payout_settings", "automated_enabled": False, "platform_fee_percent": 0}
+    cfg = await db.admin_config.find_one({"type": "payout_settings"}, {"_id": 0}) or {}
+    defaults = {
+        "type": "payout_settings",
+        "automated_enabled": False,
+        "platform_fee_percent": 0,
+        "auto_sweep_enabled": False,
+        "auto_sweep_frequency": "weekly",
+        "auto_sweep_min_amount": 10.0,
+        "auto_sweep_last_run_at": None,
+    }
+    return {**defaults, **cfg}
 
 
 @api_router.put("/admin/payout-settings")
@@ -3521,14 +3706,147 @@ async def update_payout_settings(request: Request, user: dict = Depends(get_curr
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     body = await request.json()
+    freq = str(body.get("auto_sweep_frequency", "weekly")).lower()
+    if freq not in ("daily", "weekly", "monthly"):
+        freq = "weekly"
     doc = {
         "type": "payout_settings",
         "automated_enabled": bool(body.get("automated_enabled", False)),
         "platform_fee_percent": float(body.get("platform_fee_percent", 0)),
+        "auto_sweep_enabled": bool(body.get("auto_sweep_enabled", False)),
+        "auto_sweep_frequency": freq,
+        "auto_sweep_min_amount": float(body.get("auto_sweep_min_amount", 10.0) or 10.0),
         "updated_at": datetime.now(timezone.utc),
     }
     await db.admin_config.update_one({"type": "payout_settings"}, {"$set": doc}, upsert=True)
     return {"message": "Payout settings saved", **{k: v for k, v in doc.items() if k != "updated_at"}}
+
+
+@api_router.post("/admin/payout-sweep/run")
+async def admin_run_payout_sweep_now(user: dict = Depends(get_current_user)):
+    """Admin-triggered immediate sweep — useful for manual runs and testing."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    result = await _run_auto_payout_sweep(force=True)
+    return {"message": "Sweep completed", **result}
+
+
+async def _compute_available_balance(user_id: str) -> float:
+    """Shared helper — reuse of /my/revenue math without requiring a user context."""
+    donations = await db.donations.find({"streamer_id": user_id}, {"_id": 0, "amount": 1}).to_list(10000)
+    subs = await db.subscriptions.find({"streamer_id": user_id}, {"_id": 0, "amount": 1}).to_list(10000)
+    ads = await db.ad_impressions.find({"streamer_id": user_id}, {"_id": 0, "streamer_earned": 1}).to_list(100000)
+    earned = sum(d.get("amount", 0) for d in donations) + sum(s.get("amount", 0) for s in subs) + sum(a.get("streamer_earned", 0) for a in ads)
+    completed = await db.withdrawals.find({"user_id": user_id, "status": "completed"}, {"_id": 0, "amount": 1}).to_list(10000)
+    pending = await db.withdrawals.find({"user_id": user_id, "status": "pending"}, {"_id": 0, "amount": 1}).to_list(100)
+    withdrawn = sum(w.get("amount", 0) for w in completed) + sum(w.get("amount", 0) for w in pending)
+    return round(max(0.0, earned - withdrawn), 2)
+
+
+async def _run_auto_payout_sweep(force: bool = False) -> dict:
+    """Walk every streamer that has a verified Stripe Connect account with available balance ≥ min
+    and auto-create + approve a withdrawal, routed through Stripe Connect."""
+    cfg = await db.admin_config.find_one({"type": "payout_settings"}, {"_id": 0})
+    if not cfg:
+        return {"swept": 0, "skipped": 0, "reason": "no payout_settings"}
+    if not cfg.get("auto_sweep_enabled") and not force:
+        return {"swept": 0, "skipped": 0, "reason": "auto_sweep_disabled"}
+    if not cfg.get("automated_enabled"):
+        return {"swept": 0, "skipped": 0, "reason": "automated_payouts_disabled"}
+    
+    min_amount = float(cfg.get("auto_sweep_min_amount", 10.0) or 10.0)
+    # Enumerate verified Connect accounts
+    connects = await db.stripe_connect_accounts.find(
+        {"payouts_enabled": True, "transfers_enabled": True},
+        {"_id": 0, "user_id": 1, "connected_account_id": 1},
+    ).to_list(1000)
+    
+    swept, skipped, errors = 0, 0, []
+    for c in connects:
+        uid = c.get("user_id")
+        if not uid:
+            skipped += 1
+            continue
+        try:
+            balance = await _compute_available_balance(uid)
+            if balance < min_amount:
+                skipped += 1
+                continue
+            # Create an auto-approved withdrawal record tagged as sweep
+            wid = f"wd_sweep_{uuid.uuid4().hex[:10]}"
+            user_doc = await db.users.find_one({"user_id": uid}, {"_id": 0, "email": 1, "display_name": 1, "username": 1})
+            amount_cents = int(round(balance * 100))
+            try:
+                transfer = stripe_sdk.Transfer.create(
+                    amount=amount_cents, currency="usd",
+                    destination=c["connected_account_id"],
+                    description=f"StreamVault auto-sweep {wid}",
+                )
+                payout = stripe_sdk.Payout.create(
+                    amount=amount_cents, currency="usd",
+                    stripe_account=c["connected_account_id"],
+                    description=f"StreamVault auto-sweep {wid}",
+                )
+            except Exception as se:
+                errors.append({"user_id": uid, "error": str(se)})
+                continue
+            await db.withdrawals.insert_one({
+                "withdrawal_id": wid,
+                "user_id": uid,
+                "first_name": (user_doc or {}).get("display_name") or "",
+                "last_name": "",
+                "email": (user_doc or {}).get("email") or "",
+                "amount": balance,
+                "status": "completed",
+                "source": "auto_sweep",
+                "payout_info": {"method": "stripe_connect", "transfer_id": transfer["id"], "payout_id": payout["id"]},
+                "created_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc),
+            })
+            await db.notifications.insert_one({
+                "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+                "user_id": uid,
+                "type": "payout",
+                "message": f"Auto-payout of ${balance:.2f} sent to your bank.",
+                "data": {"amount": balance, "withdrawal_id": wid},
+                "read": False,
+                "created_at": datetime.now(timezone.utc),
+            })
+            swept += 1
+        except Exception as e:
+            errors.append({"user_id": uid, "error": str(e)})
+    
+    await db.admin_config.update_one(
+        {"type": "payout_settings"},
+        {"$set": {"auto_sweep_last_run_at": datetime.now(timezone.utc)}},
+    )
+    logger.info(f"[auto-sweep] swept={swept} skipped={skipped} errors={len(errors)}")
+    return {"swept": swept, "skipped": skipped, "errors": errors}
+
+
+async def auto_payout_sweep_loop():
+    """Background task — runs the auto sweep at the configured frequency (daily/weekly/monthly)."""
+    await asyncio.sleep(60)  # let the server warm up
+    while True:
+        try:
+            cfg = await db.admin_config.find_one({"type": "payout_settings"}, {"_id": 0})
+            if cfg and cfg.get("auto_sweep_enabled") and cfg.get("automated_enabled"):
+                freq = (cfg.get("auto_sweep_frequency") or "weekly").lower()
+                last = cfg.get("auto_sweep_last_run_at")
+                if isinstance(last, str):
+                    try: last = datetime.fromisoformat(last.replace("Z", "+00:00"))
+                    except: last = None
+                if last and last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                interval = {"daily": timedelta(days=1), "weekly": timedelta(days=7), "monthly": timedelta(days=30)}.get(freq, timedelta(days=7))
+                due = (not last) or (datetime.now(timezone.utc) - last >= interval)
+                if due:
+                    logger.info(f"[auto-sweep] running — freq={freq} last={last}")
+                    await _run_auto_payout_sweep()
+        except Exception as e:
+            logger.error(f"auto_payout_sweep_loop error: {e}")
+        # Check every 30 minutes; actual sweep gated by the frequency check above.
+        await asyncio.sleep(1800)
 
 
 # ============= AD MONETIZATION =============
@@ -4413,6 +4731,22 @@ async def _detect_and_notify_grade_change(user_id: str, new_grade: Optional[str]
             "data": {"grade": new_grade},
             "created_at": datetime.now(timezone.utc),
         })
+        # Best-effort email (only if SMTP configured)
+        try:
+            user_doc = await db.users.find_one(
+                {"user_id": user_id},
+                {"_id": 0, "email": 1, "display_name": 1, "username": 1},
+            )
+            smtp_cfg = await db.admin_config.find_one({"type": "smtp"}, {"_id": 0})
+            if user_doc and user_doc.get("email") and smtp_cfg and smtp_cfg.get("enabled"):
+                await send_achievement_email(
+                    to_email=user_doc["email"],
+                    display_name=user_doc.get("display_name") or user_doc.get("username") or "there",
+                    new_grade=new_grade,
+                    previous_grade=prev_grade,
+                )
+        except Exception as e:
+            logger.debug(f"achievement email failed: {e}")
 
 
 # ============= PROFILE FEED =============
@@ -4832,6 +5166,21 @@ DEFAULT_EMAIL_TEMPLATES = {
 """.strip(),
         "text": "Reset your StreamVault password: {reset_url} (expires in 60 minutes)",
     },
+    "achievement": {
+        "subject": "You reached {new_grade} on StreamVault!",
+        "html": """
+<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#111;background:#fff;padding:24px;border-radius:8px;">
+  <h2 style="color:#00B3CC;">Congrats, {display_name}!</h2>
+  <p>You just reached the <strong>{new_grade}</strong> grade on StreamVault{previous_from}.</p>
+  <p>Your profile now shows the new badge next to your name. Share it with your community!</p>
+  <p style="margin:24px 0;">
+    <a href="{site_url}" style="background:#00E5FF;color:#000;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:700;">View your profile</a>
+  </p>
+  <p style="font-size:12px;color:#666;">Keep streaming and climbing — the next grade is right around the corner.</p>
+</div>
+""".strip(),
+        "text": "Congrats {display_name} — you reached {new_grade} on StreamVault! {site_url}",
+    },
 }
 
 
@@ -4875,6 +5224,21 @@ async def send_password_reset_email(to_email: str, display_name: str, token: str
                       _render_template(tpl["html"], ctx), _render_template(tpl["text"], ctx))
 
 
+async def send_achievement_email(to_email: str, display_name: str, new_grade: str, previous_grade: Optional[str] = None):
+    site = os.environ.get("FRONTEND_URL") or os.environ.get("REACT_APP_BACKEND_URL", "https://streamvault.app")
+    tpl = await _get_email_template("achievement")
+    ctx = {
+        "display_name": display_name or "there",
+        "new_grade": new_grade or "",
+        "previous_grade": previous_grade or "",
+        "previous_from": f" (up from {previous_grade})" if previous_grade else "",
+        "site_url": site.rstrip('/'),
+        "email": to_email,
+    }
+    await _send_email(to_email, _render_template(tpl["subject"], ctx),
+                      _render_template(tpl["html"], ctx), _render_template(tpl["text"], ctx))
+
+
 @api_router.get("/admin/email-templates")
 async def admin_get_email_templates(user: dict = Depends(get_current_user)):
     if user.get("role") != "admin":
@@ -4893,6 +5257,7 @@ async def admin_get_email_templates(user: dict = Depends(get_current_user)):
         "verification": ["display_name", "verify_url", "email"],
         "welcome": ["display_name", "site_url", "email"],
         "password_reset": ["display_name", "reset_url", "email"],
+        "achievement": ["display_name", "new_grade", "previous_grade", "previous_from", "site_url", "email"],
     }}
 
 
@@ -5040,6 +5405,9 @@ async def startup():
     # Start background broadcasting sync so viewers see live streams globally
     asyncio.create_task(broadcasting_sync_loop())
     logger.info("Broadcasting sync loop scheduled")
+    # Start auto-payout sweep loop (no-op unless admin enables it)
+    asyncio.create_task(auto_payout_sweep_loop())
+    logger.info("Auto-payout sweep loop scheduled")
 
 @app.on_event("shutdown")
 async def shutdown():

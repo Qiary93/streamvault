@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { PaperPlaneRight, Heart, CurrencyDollar, Star } from '@phosphor-icons/react';
+import { PaperPlaneRight, Heart, CurrencyDollar, Star, Broadcast } from '@phosphor-icons/react';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Button } from './ui/button';
 import { ScrollArea } from './ui/scroll-area';
@@ -98,12 +99,61 @@ function SubscriptionAlert({ msg }) {
   );
 }
 
+function RaidOutgoingAlert({ msg, onRedirectNow, remaining }) {
+  return (
+    <div
+      className="rounded-lg border border-[#AA96DA]/50 bg-gradient-to-r from-[#AA96DA]/20 to-[#5F27CD]/15 p-3"
+      data-testid={`chat-raid-outgoing-${msg.message_id}`}
+    >
+      <div className="flex items-center gap-2 mb-2">
+        <Broadcast weight="fill" className="w-5 h-5 text-[#AA96DA] animate-pulse" />
+        <span className="text-sm font-bold text-[#AA96DA]">
+          Raiding {msg.target_display_name || msg.target_username}!
+        </span>
+      </div>
+      <p className="text-xs text-white/80 mb-3">
+        {remaining > 0
+          ? `Redirecting everyone to @${msg.target_username}'s stream in ${remaining}s…`
+          : `Taking you to @${msg.target_username}'s stream now…`}
+      </p>
+      <button
+        type="button"
+        onClick={onRedirectNow}
+        className="text-xs px-3 py-1.5 rounded-full bg-[#AA96DA] text-black font-bold hover:bg-[#8B7AC4]"
+        data-testid={`raid-go-now-${msg.message_id}`}
+      >
+        Go now →
+      </button>
+    </div>
+  );
+}
+
+function RaidIncomingAlert({ msg }) {
+  return (
+    <div
+      className="rounded-lg border border-[#00E5FF]/50 bg-gradient-to-r from-[#00E5FF]/15 to-[#AA96DA]/15 p-3"
+      data-testid={`chat-raid-incoming-${msg.message_id}`}
+    >
+      <div className="flex items-center gap-2">
+        <Broadcast weight="fill" className="w-5 h-5 text-[#00E5FF]" />
+        <span className="text-sm font-bold text-[#00E5FF]">
+          Raid from @{msg.source_username} with {Number(msg.source_viewer_count || 0)} viewer(s)!
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export default function ChatBox({ streamId, streamerId, isSubscribed = false }) {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [connected, setConnected] = useState(false);
   const [heartedIds, setHeartedIds] = useState(() => new Set());
+  // Active outgoing-raid countdown state: { raidId, targetStreamId, remaining }
+  const [activeRaid, setActiveRaid] = useState(null);
+  const raidTimerRef = useRef(null);
   const scrollRef = useRef(null);
   const wsRef = useRef(null);
   const reconnectTimerRef = useRef(null);
@@ -202,6 +252,26 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
           return;
         }
 
+        if (message.type === 'raid_outgoing') {
+          // Start local countdown. If the viewer is the streamer themselves, don't auto-redirect.
+          const isStreamer = user?.user_id === streamerId;
+          const countdown = Math.max(1, Number(message.countdown_seconds || 10));
+          setMessages(prev => {
+            if (prev.some(m => m.message_id === message.message_id)) return prev;
+            return [...prev, message];
+          });
+          if (!isStreamer) {
+            setActiveRaid({
+              raidId: message.raid_id,
+              messageId: message.message_id,
+              targetStreamId: message.target_stream_id,
+              targetUsername: message.target_username,
+              remaining: countdown,
+            });
+          }
+          return;
+        }
+
         setMessages(prev => {
           if (prev.some(m => m.message_id === message.message_id)) return prev;
           return [...prev, message];
@@ -265,6 +335,38 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
       }
     }
   };
+
+  // Outgoing raid countdown: tick every second, redirect at 0
+  useEffect(() => {
+    if (!activeRaid) return;
+    if (raidTimerRef.current) clearInterval(raidTimerRef.current);
+    raidTimerRef.current = setInterval(() => {
+      setActiveRaid(prev => {
+        if (!prev) return prev;
+        const next = prev.remaining - 1;
+        if (next <= 0) {
+          clearInterval(raidTimerRef.current);
+          // Defer navigation to next tick so React can finish rendering
+          setTimeout(() => {
+            if (prev.targetStreamId) navigate(`/stream/${prev.targetStreamId}`);
+          }, 0);
+          return null;
+        }
+        return { ...prev, remaining: next };
+      });
+    }, 1000);
+    return () => {
+      if (raidTimerRef.current) clearInterval(raidTimerRef.current);
+    };
+  }, [activeRaid?.raidId, navigate]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const goToRaidNow = useCallback(() => {
+    if (!activeRaid) return;
+    const target = activeRaid.targetStreamId;
+    if (raidTimerRef.current) clearInterval(raidTimerRef.current);
+    setActiveRaid(null);
+    if (target) navigate(`/stream/${target}`);
+  }, [activeRaid, navigate]);
 
   const handleHeart = async (messageId) => {
     if (!user) return;
@@ -346,6 +448,21 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
               return (
                 <div key={msg.message_id} className="chat-message-enter" data-testid={`chat-msg-${msg.message_id}`}>
                   <SubscriptionAlert msg={msg} />
+                </div>
+              );
+            }
+            if (msg.type === 'raid_outgoing') {
+              const remaining = activeRaid && activeRaid.messageId === msg.message_id ? activeRaid.remaining : 0;
+              return (
+                <div key={msg.message_id} className="chat-message-enter" data-testid={`chat-msg-${msg.message_id}`}>
+                  <RaidOutgoingAlert msg={msg} onRedirectNow={goToRaidNow} remaining={remaining} />
+                </div>
+              );
+            }
+            if (msg.type === 'raid_incoming') {
+              return (
+                <div key={msg.message_id} className="chat-message-enter" data-testid={`chat-msg-${msg.message_id}`}>
+                  <RaidIncomingAlert msg={msg} />
                 </div>
               );
             }

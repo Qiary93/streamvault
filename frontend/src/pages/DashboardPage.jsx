@@ -18,6 +18,7 @@ import PathToPerfectStreamer from '../components/PathToPerfectStreamer';
 import GameNameAutocomplete from '../components/GameNameAutocomplete';
 import LiveTimer from '../components/LiveTimer';
 import DonorsLeaderboard from '../components/DonorsLeaderboard';
+import RaidSection from '../components/RaidSection';
 import { toast } from 'sonner';
 import axios from 'axios';
 
@@ -653,6 +654,9 @@ export default function DashboardPage() {
 
       {/* Emoji Upload */}
       <EmojiUploadSection />
+
+      {/* Raid another streamer (only usable while live) */}
+      <RaidSection stream={myStream} />
 
       {/* Monetization (Ad earnings) */}
       <MonetizationSection />

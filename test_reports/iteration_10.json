@@ -1,0 +1,53 @@
+{
+  "summary": "Iteration 10 — StreamVault v2 features fully validated. Backend: 25/25 pytest cases passed in /app/backend/tests/test_streamvault_v10.py covering (a) stream sort viewers/newest/oldest/invalid-defaults-to-viewers, (b) raid error branches 401/403/404/400 + /api/raids/recent auth+list, (c) resend-verification now persists verification_sent_at BEFORE the 503 SMTP check — verified by DB roundtrip: 1st call → 503/200 + sent_at persisted, 2nd call within 60s → 429 (not 503), (d) forgot-password same pattern — 2nd call within 60s returns enumeration-safe 200 and does NOT mint a new password_reset_token, (e) reset-password IP rate limit: 6th attempt from same IP returns 429 (first 5 return 400 on invalid token), (f) admin email-templates now includes 'achievement' key with available_vars=[display_name,new_grade,previous_grade,previous_from,site_url,email] and PUT persists roundtrip, (g) /admin/payout-settings default includes auto_sweep_enabled=False/weekly/10.0, PUT persists daily+25, invalid frequency falls back to weekly, (h) /admin/payout-sweep/run returns reason='automated_payouts_disabled' when disabled and requires admin (403 for non-admin), (i) regression: admin+demo login+/me, /api/recommended, /api/categories, /api/donations/received. Backend startup log confirms BOTH 'Broadcasting sync loop scheduled' and 'Auto-payout sweep loop scheduled' lines. Frontend: (1) CRITICAL RichTextEditor bug-fix verified — typed 'abcdef' in Create Stream dialog → innerHTML='abcdef' in correct order (previously would render as 'fedcba'). (2) /browse sort bar — 3 pills (Most viewers/Newest/Oldest) render; clicking Newest fires GET /api/streams?sort=newest, clicking Oldest fires GET /api/streams?sort=oldest. (3) /dashboard Raid section (is_live=true,broadcasting=false) renders with raid-section + raid-disabled-notice + raid-target-input (disabled) + raid-start-btn (disabled) — matches spec. (4) /admin AdminEmailTemplates shows 4 tabs (verification/welcome/password_reset/achievement). (5) /admin AdminAutoPayoutSweep shows all expected testids: automated-payout-toggle, auto-sweep-enabled-toggle, auto-sweep-freq-{daily,weekly,monthly}, auto-sweep-min-amount, auto-sweep-save, auto-sweep-run-now. (6) Regression: /forgot-password + /reset-password still render, donors-leaderboard still on dashboard.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "Backend TestRegression (5/5): admin/me, demo/me, /recommended, /categories, /donations/received",
+    "Backend TestStreamSort (4/4): sort=viewers|newest|oldest|invalid all return 200",
+    "Backend TestRaidErrorBranches (6/6): unauth 401, nonexistent-stream 404, wrong-streamer 403, not-live 400, recent-raids auth-required, recent-raids returns list",
+    "Backend TestResendVerificationRateLimit (1/1): sent_at persisted before 503; 2nd call within 60s returns 429 (NOT 503)",
+    "Backend TestForgotPasswordRateLimit (1/1): sent_at persisted before 503; 2nd call returns 200 with no new token",
+    "Backend TestResetPasswordIPRateLimit (1/1): 6th bad-token call from same IP returns 429",
+    "Backend TestAdminEmailTemplates (2/2): GET returns 4 templates incl. achievement + correct available_vars; PUT persists achievement subject",
+    "Backend TestAdminPayoutSettings (5/5): defaults correct; PUT persists daily+25; invalid freq falls back weekly; sweep reason=automated_payouts_disabled; non-admin 403",
+    "Backend startup logs include BOTH 'Broadcasting sync loop scheduled' AND 'Auto-payout sweep loop scheduled'",
+    "Frontend RichTextEditor: type 'abcdef' → 'abcdef' (correct order; bug fix confirmed)",
+    "Frontend /browse: sort pills render; Newest/Oldest clicks fire /api/streams?sort=...",
+    "Frontend /dashboard Raid section: raid-section+raid-disabled-notice+disabled input/button when not broadcasting",
+    "Frontend /admin: 4 email-tpl tabs (incl. achievement) + all 10 auto-payout-sweep testids",
+    "Frontend regression: /forgot-password, /reset-password, donors-leaderboard all render"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_streamvault_v10.py",
+    "/app/test_reports/pytest/pytest_results_v10.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Raid endpoint has a race: between the target_stream live+broadcasting check and the broadcast, the target may go offline, but raid_incoming banner will still be inserted/broadcasted to a dead stream. Acceptable (chat listeners will just not receive), but consider a staleness check.",
+    "_RESET_PWD_IP_HITS is an in-memory dict → process-local. A multi-worker deployment (gunicorn --workers>1) will divide the IP quota per worker, so effective limit becomes max_hits * workers. Consider backing with Redis or a shared Mongo TTL collection when scaling. For single-worker uvicorn (current), this is fine.",
+    "resend-verification persists verification_sent_at TWICE when SMTP is on (once pre-SMTP, once in the token update call). Harmless but redundant write.",
+    "get_streams sort=newest uses started_at descending — streams that were created but never went live may have no started_at and sort inconsistently. Consider COALESCE(started_at, created_at) or assert NOT NULL on started_at at stream-creation time.",
+    "RaidSection returns null when !stream.stream_id, so a streamer with no Stream document at all won't even see a 'Go live to raid' hint. Consider rendering a disabled card with onboarding copy."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_streamvault_v10.py (new; 25 passed)"
+  ],
+  "success_rate": {"backend": "100% (25/25)", "frontend": "100% of 14 executed UI checks"},
+  "test_credentials": {
+    "admin": "admin@streamvault.com / Admin123!",
+    "streamer_demo": "progamer@demo.com / Demo123!"
+  },
+  "seed_data_creation": "Temporarily inserted one unverified test user per resend-verification test (test_unverified_<hex>@example.com), cleaned up in fixture teardown. Modified admin_config.payout_settings during tests (auto_sweep_enabled=true, freq=daily, min_amount=25 persisted). Temporarily flipped progamer's stream.is_live=false then restored to is_live=true/broadcasting=false in mongo to unlock the create-stream modal and then the RaidSection disabled-state rendering.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "SMTP still DISABLED. Progamer stream left at is_live=true, broadcasting=false (same as when it was fetched from Livekit sync). admin_config.payout_settings is in the test state {automated_enabled:false, auto_sweep_enabled:false, auto_sweep_frequency:weekly, auto_sweep_min_amount:10} after the invalid-freq fallback test re-set it. email_templates admin_config may contain a TEST achievement subject — main agent can delete {type:'email_templates'} to restore defaults. RaidSection + Create Stream modal both require the logged-in user to OWN a stream row — if progamer gets wiped from db.streams the modal+raid UI vanish. Raid successful-path (200) is untestable without a live LiveKit broadcast pair, which is expected per the review note.",
+  "rca of the issue": "No unresolved bugs. The user-reported 'Description types backward' bug was verified fixed: RichTextEditor.jsx now uses a useEffect that writes to editorRef.current.innerHTML only when the value change did NOT come from the user's own onInput (guarded by isInternalUpdateRef), instead of React re-applying dangerouslySetInnerHTML every render which would reset the caret to position 0 on every keystroke and reverse the visible character order."
+}

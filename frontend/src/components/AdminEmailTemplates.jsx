@@ -10,6 +10,7 @@ const TEMPLATE_KEYS = [
   { key: 'verification', label: 'Email verification' },
   { key: 'welcome', label: 'Welcome (after verification)' },
   { key: 'password_reset', label: 'Password reset' },
+  { key: 'achievement', label: 'Achievement (grade up)' },
 ];
 
 export default function AdminEmailTemplates() {

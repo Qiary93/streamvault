@@ -6,38 +6,32 @@ import axios from 'axios';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
+const SORT_OPTIONS = [
+  { value: 'viewers', label: 'Most viewers' },
+  { value: 'newest', label: 'Newest' },
+  { value: 'oldest', label: 'Oldest' },
+];
+
 export default function BrowsePage() {
   const [streams, setStreams] = useState([]);
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('streams');
+  const [sort, setSort] = useState('viewers');
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [streamsRes, categoriesRes] = await Promise.all([
-          axios.get(`${API}/api/streams`),
-          axios.get(`${API}/api/categories`)
-        ]);
-        setStreams(streamsRes.data);
-        setCategories(categoriesRes.data);
-      } catch (error) {
-        console.error('Error fetching data:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchData();
+    axios.get(`${API}/api/categories`)
+      .then(res => setCategories(res.data))
+      .catch(() => {});
   }, []);
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-[50vh]">
-        <div className="w-8 h-8 border-2 border-[#00E5FF] border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
-  }
+  useEffect(() => {
+    setLoading(true);
+    axios.get(`${API}/api/streams?sort=${sort}&limit=40`)
+      .then(res => setStreams(res.data))
+      .catch(err => console.error('Error fetching streams:', err))
+      .finally(() => setLoading(false));
+  }, [sort]);
 
   return (
     <div className="p-4 lg:p-6" data-testid="browse-page">
@@ -45,24 +39,40 @@ export default function BrowsePage() {
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="bg-[#0F0F16] border border-white/10">
-          <TabsTrigger 
-            value="streams" 
-            className="data-[state=active]:bg-[#00E5FF] data-[state=active]:text-black"
-            data-testid="tab-streams"
-          >
+          <TabsTrigger value="streams" className="data-[state=active]:bg-[#00E5FF] data-[state=active]:text-black" data-testid="tab-streams">
             Live Streams
           </TabsTrigger>
-          <TabsTrigger 
-            value="categories" 
-            className="data-[state=active]:bg-[#00E5FF] data-[state=active]:text-black"
-            data-testid="tab-categories"
-          >
+          <TabsTrigger value="categories" className="data-[state=active]:bg-[#00E5FF] data-[state=active]:text-black" data-testid="tab-categories">
             Categories
           </TabsTrigger>
         </TabsList>
 
         <TabsContent value="streams" className="mt-6">
-          {streams.length > 0 ? (
+          {/* Sort bar */}
+          <div className="flex items-center gap-2 mb-4" data-testid="stream-sort-bar">
+            <span className="text-xs text-[#A0A0AB]">Sort by:</span>
+            {SORT_OPTIONS.map(opt => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setSort(opt.value)}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition ${
+                  sort === opt.value
+                    ? 'bg-[#00E5FF] text-black'
+                    : 'bg-[#1A1A24] text-[#A0A0AB] hover:text-white hover:bg-[#242433]'
+                }`}
+                data-testid={`sort-${opt.value}`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          {loading ? (
+            <div className="flex items-center justify-center py-20">
+              <div className="w-8 h-8 border-2 border-[#00E5FF] border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : streams.length > 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {streams.map((stream) => (
                 <StreamCard key={stream.stream_id} stream={stream} />
