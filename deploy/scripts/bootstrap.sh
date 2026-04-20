@@ -144,6 +144,8 @@ else
     prompt DOMAIN            "Public domain (A-record must point to this server, e.g. stream.example.com)"
     prompt LETSENCRYPT_EMAIL "Email for Let's Encrypt notifications"
     prompt ADMIN_EMAIL       "Admin account email" "admin@${DOMAIN}"
+    prompt ADMIN_USERNAME    "Admin username (the @handle visible on the platform)" "admin"
+    prompt ADMIN_DISPLAY_NAME "Admin display name (shown next to chat messages)" "$ADMIN_USERNAME"
     prompt ADMIN_PASSWORD    "Admin account password (min 8 chars)" "" 1
     [[ ${#ADMIN_PASSWORD} -ge 8 ]] || die "Admin password must be at least 8 characters."
 
@@ -188,6 +190,8 @@ MONGO_ROOT_USER=$MONGO_ROOT_USER
 MONGO_ROOT_PASSWORD=$MONGO_ROOT_PASSWORD
 JWT_SECRET=$JWT_SECRET
 ADMIN_EMAIL=$ADMIN_EMAIL
+ADMIN_USERNAME=$ADMIN_USERNAME
+ADMIN_DISPLAY_NAME=$ADMIN_DISPLAY_NAME
 ADMIN_PASSWORD=$ADMIN_PASSWORD
 
 LIVEKIT_API_KEY=$LIVEKIT_API_KEY

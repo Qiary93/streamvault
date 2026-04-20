@@ -1961,18 +1961,24 @@ async def get_quality_options():
 # ============= SEED DATA =============
 
 async def seed_data():
-    # Seed admin
+    # Seed admin — a fully-featured user account with admin rights (same shape
+    # as an account created via /api/auth/register, just with role=admin).
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@streamvault.com")
     admin_password = os.environ.get("ADMIN_PASSWORD", "Admin123!")
+    admin_username = os.environ.get("ADMIN_USERNAME", "admin").lower().strip() or "admin"
+    admin_display_name = os.environ.get("ADMIN_DISPLAY_NAME") or admin_username
     
     existing = await db.users.find_one({"email": admin_email})
     if not existing:
+        # Avoid collision if someone else already took the desired username
+        if await db.users.find_one({"username": admin_username}):
+            admin_username = f"{admin_username}_{uuid.uuid4().hex[:4]}"
         admin_id = f"user_{uuid.uuid4().hex[:12]}"
         await db.users.insert_one({
             "user_id": admin_id,
             "email": admin_email,
-            "username": "admin",
-            "display_name": "Admin",
+            "username": admin_username,
+            "display_name": admin_display_name,
             "password_hash": hash_password(admin_password),
             "avatar_url": None,
             "bio": "Platform Administrator",
@@ -1982,9 +1988,17 @@ async def seed_data():
             "is_streaming": False,
             "stream_key": f"sk_{secrets.token_hex(16)}",
             "email_verified": True,
-            "created_at": datetime.now(timezone.utc)
+            "verification_token": None,
+            "verification_sent_at": None,
+            "created_at": datetime.now(timezone.utc),
         })
-        logger.info("Admin user created")
+        logger.info(f"Admin user created: {admin_email} (username={admin_username})")
+    else:
+        # Ensure the existing account is always flagged as admin + verified on reboot.
+        update = {"role": "admin", "email_verified": True}
+        if not existing.get("stream_key"):
+            update["stream_key"] = f"sk_{secrets.token_hex(16)}"
+        await db.users.update_one({"user_id": existing["user_id"]}, {"$set": update})
     
     # Backfill email_verified=True for any legacy users missing the field
     await db.users.update_many(

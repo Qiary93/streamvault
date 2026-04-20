@@ -3,18 +3,25 @@
 ## How the admin account is seeded
 
 On every backend boot, the FastAPI app runs a **seed step** that looks for a
-user with the email in `ADMIN_EMAIL`. If none exists it creates one with:
-
-- `role: "admin"`
-- `email_verified: True`
-- `password_hash` = bcrypt(`ADMIN_PASSWORD`)
+user with the email in `ADMIN_EMAIL`. If none exists it creates a **fully
+featured user account** (same fields as one created through the normal
+`/api/auth/register` endpoint) with `role: "admin"`, `email_verified: true`,
+and a unique stream key — so the admin can stream, follow others, receive
+donations, etc., just like any other user.
 
 Both values are read from `deploy/.env`:
 
 ```env
-ADMIN_EMAIL=admin@streamvault.local
+ADMIN_EMAIL=admin@yourdomain.com
+ADMIN_USERNAME=admin                 # the @handle visible on the platform
+ADMIN_DISPLAY_NAME=Admin             # human-friendly name shown in UI/chat
 ADMIN_PASSWORD=CHANGE_ME_Strong_Password!
 ```
+
+On subsequent boots, if an account with that email already exists, the seed
+only **re-asserts** `role: "admin"` and `email_verified: true` (so nobody can
+accidentally lock themselves out) — it does NOT overwrite your password,
+username, or display name. Use `scripts/reset-admin.sh` to update those.
 
 > ⚠️ **Change `ADMIN_PASSWORD` before the first boot.** The seed only creates
 > the account once — changing `.env` after that does NOT update the password.
