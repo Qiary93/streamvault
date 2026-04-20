@@ -1,0 +1,103 @@
+name: streamvault
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: sv-mongo
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+      - mongo-config:/data/configdb
+    environment:
+      MONGO_INITDB_DATABASE: ${DB_NAME:-streamvault}
+    networks:
+      - sv-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    image: streamvault-backend:latest
+    container_name: sv-backend
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      DB_NAME: ${DB_NAME:-streamvault}
+      CORS_ORIGINS: "https://${DOMAIN}"
+      FRONTEND_URL: "https://${DOMAIN}"
+      JWT_SECRET: ${JWT_SECRET}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      STRIPE_API_KEY: ${STRIPE_API_KEY:-}
+      STRIPE_CONNECT_WEBHOOK_SECRET: ${STRIPE_CONNECT_WEBHOOK_SECRET:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      LIVEKIT_URL: ${LIVEKIT_URL:-}
+      EMERGENT_LLM_KEY: ${EMERGENT_LLM_KEY:-}
+    networks:
+      - sv-net
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+      args:
+        REACT_APP_BACKEND_URL: "https://${DOMAIN}"
+    image: streamvault-frontend:latest
+    container_name: sv-frontend
+    restart: unless-stopped
+    networks:
+      - sv-net
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: sv-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/streamvault.conf.template:/etc/nginx/templates/streamvault.conf.template:ro
+      - ./nginx/ssl-params.conf:/etc/nginx/conf.d/ssl-params.conf:ro
+      - letsencrypt:/etc/letsencrypt
+      - certbot-webroot:/var/www/certbot
+    environment:
+      DOMAIN: ${DOMAIN}
+    # The nginx:alpine image supports envsubst via /etc/nginx/templates
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - sv-net
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: sv-certbot
+    restart: unless-stopped
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - certbot-webroot:/var/www/certbot
+    # Renew every 12h; reload nginx on success.
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet && nginx -s reload 2>/dev/null || true; sleep 12h & wait $${!}; done'"
+    depends_on:
+      - nginx
+    networks:
+      - sv-net
+
+volumes:
+  mongo-data:
+  mongo-config:
+  letsencrypt:
+  certbot-webroot:
+
+networks:
+  sv-net:
+    driver: bridge

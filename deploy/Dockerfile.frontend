@@ -1,0 +1,44 @@
+# Multi-stage: build the React app, then serve the static bundle via Nginx.
+FROM node:20-alpine AS build
+
+WORKDIR /app
+
+# Bundle-time env — the value is baked into the compiled JS at build time.
+ARG REACT_APP_BACKEND_URL
+ENV REACT_APP_BACKEND_URL=${REACT_APP_BACKEND_URL}
+
+COPY frontend/package.json frontend/yarn.lock /app/
+RUN yarn install --frozen-lockfile --network-timeout 600000
+
+COPY frontend /app
+RUN yarn build
+
+# ---- runtime image ----
+FROM nginx:1.27-alpine
+
+RUN rm -rf /usr/share/nginx/html/*
+COPY --from=build /app/build /usr/share/nginx/html
+
+# Minimal nginx site config — the outer nginx (reverse proxy) terminates TLS.
+# Single-Page-App fallback so /stream/:id etc. hit index.html.
+RUN cat > /etc/nginx/conf.d/default.conf <<'EOF'
+server {
+    listen 3000;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Long cache for hashed assets, no-cache for index.html
+    location /static/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+    location / {
+        try_files $uri /index.html;
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+    }
+}
+EOF
+
+EXPOSE 3000
+CMD ["nginx", "-g", "daemon off;"]
