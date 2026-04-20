@@ -1,71 +1,79 @@
 # StreamVault — PRD
 
 ## Original Problem Statement
-Build a Kick.com-style livestream platform: real-time video (LiveKit/WebRTC), WebSocket chat, streamer profiles, VOD recording, custom tipping/donations, subscription tiers, admin panel. Plus incremental feature releases (revenue analytics, Stripe Connect payouts, ad monetization, emotes, chat moderation, achievements, streamer path, real-time chat rules sync, VAST ads, etc.).
+Build a Kick.com-style livestream platform: real-time video (LiveKit/WebRTC), WebSocket chat, streamer profiles, VOD recording, custom tipping/donations, subscription tiers, admin panel. Plus incremental feature releases (revenue analytics, Stripe Connect payouts, ad monetization, emotes, chat moderation, achievements, streamer path, real-time chat rules sync, VAST ads, raids, auto-payouts, etc.).
 
 ## Tech Stack
-- Backend: FastAPI, Motor (MongoDB, tz_aware), LiveKit SDK, Stripe 15.x (incl. Connect Custom + webhooks), emergentintegrations
+- Backend: FastAPI, Motor (MongoDB, tz_aware), LiveKit SDK, Stripe 15.x (incl. Connect Custom + webhooks), emergentintegrations, aiosmtplib
 - Frontend: React + Tailwind + shadcn/ui + Recharts + Phosphor icons + livekit-components-react
 - Cloud: LiveKit Cloud, Stripe, Wasabi/S3, Emergent object storage
 
 ## What's Implemented
 
+### Feb 2026 — Raid, Sort, Auto-payouts, Achievement email, Rate-limit hardening, RichTextEditor fix
+- **Bug fix — RichTextEditor typing backward**: removed `dangerouslySetInnerHTML` (which reset caret to pos 0 on every keystroke). Content is now synced imperatively via a `useEffect` guarded by `isInternalUpdateRef` so user typing isn't overwritten.
+- **Stream sorting**: `GET /api/streams?sort=viewers|newest|oldest`. Browse page exposes 3 sort pills.
+- **Raid feature (Twitch-style)**:
+  - `POST /api/streams/{id}/raid` with `{target_username}`. Source streamer must be live+broadcasting; target must be live.
+  - Emits WS `raid_outgoing` to source chat (10s countdown banner, logged-in viewers auto-redirect) and `raid_incoming` to target chat (welcome banner with raider count).
+  - `GET /api/raids/recent` lists incoming/outgoing raids.
+  - `RaidSection` on streamer Dashboard (disabled while offline).
+- **Auto-payout scheduling**:
+  - `auto_payout_sweep_loop` background task (checks every 30 min, runs per configured frequency).
+  - `PUT /api/admin/payout-settings` extended with `auto_sweep_enabled`, `auto_sweep_frequency` (daily/weekly/monthly), `auto_sweep_min_amount`.
+  - `POST /api/admin/payout-sweep/run` manual admin trigger. Sweeps every verified Stripe Connect account with balance ≥ min via `Transfer.create` + `Payout.create`.
+  - New `AdminAutoPayoutSweep` panel in admin.
+- **Achievement progression emails**: grade-up detection now dispatches `send_achievement_email` (uses new `achievement` template). Admin `AdminEmailTemplates` gained a 4th tab. Available vars: `display_name, new_grade, previous_grade, previous_from, site_url, email`.
+- **Rate-limit hardening**:
+  - `*_sent_at` timestamps for `/auth/resend-verification` and `/auth/forgot-password` now persisted BEFORE SMTP-enabled check — rate window enforced consistently across SMTP enable/disable toggles.
+  - `/auth/reset-password` now enforces IP-based rate limit (5 attempts / 15 min, process-local dict).
+
 ### Feb 2026 — Global broadcasting sync, Timer TZ fix, Chat enhancements, SMTP expansion, Top Donors move
-- **Global broadcasting sync** — new background task `broadcasting_sync_loop` polls LiveKit every 30s for *every* `is_live` stream and updates `broadcasting` / `broadcasting_started_at` / `broadcasting_ended_at` globally. Viewers now see streams in Recommended even when the streamer's dashboard is closed. Probe logic extracted to `_probe_livekit_broadcasting` (used by both the background loop and the existing `/check-broadcast` endpoint).
-- **Live Timer TZ fix** — `AsyncIOMotorClient` now uses `tz_aware=True, tzinfo=timezone.utc`, so MongoDB datetimes return with UTC tzinfo and FastAPI serializes them with `+00:00`. Fixes the "Time Live" timer starting at 3h on clients in non-UTC zones.
-- **Chat enhancements**
-  - Inline subscriber tier badges in chat (custom `badge_url` if uploaded, otherwise a star icon).
-  - Random per-user color for subscriber usernames (20-color palette, deterministic hash of user_id).
-  - Donation announcement messages (`donation_alert`) with heart/like reactions (`POST /api/streams/{stream_id}/chat/{message_id}/heart`) and realtime `reaction_update` WS events.
-  - Subscription announcement messages (`subscription_alert`) rendered as a purple banner with tier name + badge.
-- **SMTP expansion**
-  - **Password reset flow**: `POST /api/auth/forgot-password` + `POST /api/auth/reset-password` (60-minute token, enumeration-safe). New `/forgot-password` and `/reset-password` pages; "Forgot password?" link on login.
-  - **Welcome email** sent on successful `POST /api/auth/verify-email` (first-time verification).
-  - **Rate limit on `/auth/resend-verification`** (60-second cooldown, HTTP 429).
-  - **Configurable email templates** via `admin_config` `type: "email_templates"` doc (`verification`, `welcome`, `password_reset`), with subject/html/text and `{display_name}`, `{verify_url}`, `{reset_url}`, `{site_url}`, `{email}` variables. New `GET/PUT /api/admin/email-templates` and `AdminEmailTemplates` panel inside AdminPage.
-- **Top Donors moved** from `ProfilePage` to `DashboardPage` (now under "Recent Donations" section).
+- Background task `broadcasting_sync_loop` syncs LiveKit broadcasting state globally every 30s.
+- `Motor tz_aware=True` fixes the LiveTimer 3h offset (datetimes serialize with +00:00).
+- Chat: inline tier badges, random subscriber username colors, `donation_alert` / `subscription_alert` WS events, heart reactions via `POST /api/streams/{id}/chat/{msg_id}/heart`.
+- SMTP: password reset (`/auth/forgot-password`, `/auth/reset-password`), welcome email on verify, rate-limited resend, configurable email templates admin UI.
+- Top Donors moved from ProfilePage → DashboardPage.
 
-### Feb 2026 — SMTP / Email verification, Tier badges, Live Timer, 60 emote limit
-- **Admin SMTP Settings** — `/api/admin/smtp-settings` GET/PUT + `/api/admin/smtp-test` endpoints.
-- **Email verification flow** — register → verification token email → `/verify-email` → account active.
-- **Subscription Tier Badges** — `POST/DELETE /api/my/tiers/{tier_id}/badge` (max 256KB). Badge shown in subscribe modal.
-- **Emote limit raised** — 20 → 60 per streamer.
-- **Dashboard "Time Live"** & **Stream Player broadcasting timer** — `LiveTimer.jsx`, resets when OBS disconnects.
+### Earlier (Jan–Feb 2026)
+- SMTP email verification, tier badge uploads, 60-emote limit, Dashboard/Player LiveTimer.
+- IMA SDK, level-up confetti, profile feed, top-donor leaderboards, game autocomplete, SSRF hardening.
+- Achievements, Path, Followers sidebar, real-time chat sync, VAST ads, ad opt-out.
+- Stripe Connect automated payouts, ad monetization, revenue analytics, gamification.
+- LiveKit WebRTC + OBS WHIP, VOD recording, subscription tiers, donations, Picture-in-Picture / Clip / Theatre controls, chat moderation.
 
-### Feb 2026 — IMA SDK, Level-up confetti, Profile feed, Leaderboards, Game autocomplete, SSRF hardening
-- SSRF-hardened VAST resolver.
-- Google IMA SDK ad type, level-up confetti + notifications + auto-post to profile feed.
-- Profile feed, top-donor leaderboards, games autocomplete.
+## Key API Endpoints (new this release)
+- `GET /api/streams?sort=viewers|newest|oldest`
+- `POST /api/streams/{stream_id}/raid`, `GET /api/raids/recent`
+- `POST /api/admin/payout-sweep/run`
+- `GET/PUT /api/admin/payout-settings` (new fields)
 
-### Earlier
-- Achievements, Path, Followers sidebar, Real-time chat sync, VAST ads, Ad opt-out, Admin Other Settings, Stripe Connect automated payouts, IMA/VAST ad monetization, chat moderation (followers-only, subs-only, restricted words), custom emotes, PiP/Clip/Theatre controls, VOD recording, Category seed (40+).
-
-## Key API Endpoints — Feb 2026 (this release)
-- `POST /api/auth/forgot-password`, `POST /api/auth/reset-password`
-- `GET /api/admin/email-templates`, `PUT /api/admin/email-templates`
-- `POST /api/streams/{stream_id}/chat/{message_id}/heart` (toggle heart on a donation/chat message)
-- Background task: `broadcasting_sync_loop` (no HTTP endpoint)
-
-## Data Models — new/updated
-- `users`: `password_reset_token`, `password_reset_expires`, `password_reset_sent_at`
-- `admin_config` type `email_templates`: `{templates: {verification|welcome|password_reset: {subject, html, text}}}`
-- `chat_messages` types: `donation_alert`, `subscription_alert`, `reaction_update` (WS only) — `donation_alert` has `amount`, `content`, `hearts`
-- `chat_hearts`: `{message_id, stream_id, user_id, created_at}` (reaction ledger)
+## Data Models (new/updated)
+- `raids`: `{raid_id, source_user_id, source_stream_id, source_viewer_count, target_user_id, target_stream_id, created_at}`
+- `admin_config` type `payout_settings`: adds `auto_sweep_enabled, auto_sweep_frequency, auto_sweep_min_amount, auto_sweep_last_run_at`
+- `admin_config` type `email_templates`: adds `achievement` template
+- `withdrawals` docs may have `source: "auto_sweep"` for sweep-created entries
 
 ## Test Credentials
 See `/app/memory/test_credentials.md`
 
 ## Roadmap
 
-### P1
-- Stream sorting (viewers, newest)
-- Split `server.py` (now ~4900 lines) into routers
+### P1 (backlog)
+- Split `server.py` (~5300 lines) into routers (auth, streams, chat, donations, subscriptions, raids, admin, email, payouts).
+- Persist `_RESET_PWD_IP_HITS` in Redis/Mongo for multi-worker deployments.
+- Raid staleness re-check before broadcasting to target.
 
-### P2
-- True last-30s MP4 clips via LiveKit Egress
-- Achievement progression notifications + email
-- Payout scheduling (daily/weekly auto-sweeps)
+### P2 (skipped per user)
+- True last-30s MP4 clips via LiveKit Egress.
+
+### P3 (nice-to-have)
+- Raid preview thumbnail in outgoing banner.
+- Admin audit log for sweeps + raids.
+- Exponential backoff on auto-sweep errors per streamer.
 
 ## Project Health
 - Broken: None
-- Mocked: None (real LiveKit + Stripe + S3 + MongoDB)
+- Mocked: None (real LiveKit + Stripe + S3 + MongoDB + aiosmtplib)
+- Backend tests: 25/25 passed (iteration 10)
+- Frontend: 14/14 UI checks passed (iteration 10)
