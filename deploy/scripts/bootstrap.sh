@@ -81,7 +81,6 @@ LIVEKIT_API_SECRET=
 LIVEKIT_URL=
 STRIPE_API_KEY=
 STRIPE_CONNECT_WEBHOOK_SECRET=
-EMERGENT_LLM_KEY=
 ENVEXAMPLE
     ok "Regenerated deploy/.env.example"
 fi
@@ -157,8 +156,6 @@ else
     prompt STRIPE_API_KEY        "Stripe secret key (sk_…)" " " 1; [[ "$STRIPE_API_KEY" == " " ]] && STRIPE_API_KEY=""
     prompt STRIPE_CONNECT_WEBHOOK_SECRET "Stripe Connect webhook signing secret" " " 1
     [[ "$STRIPE_CONNECT_WEBHOOK_SECRET" == " " ]] && STRIPE_CONNECT_WEBHOOK_SECRET=""
-    prompt EMERGENT_LLM_KEY      "Emergent LLM / object-storage key" " " 1
-    [[ "$EMERGENT_LLM_KEY" == " " ]] && EMERGENT_LLM_KEY=""
 
     JWT_SECRET="$(openssl rand -hex 48)"
     log "Generated JWT_SECRET (48 random bytes)."
@@ -174,7 +171,6 @@ else
     echo " Admin password:  (hidden, ${#ADMIN_PASSWORD} chars)"
     echo " LiveKit keys:    $([[ -n $LIVEKIT_API_KEY ]] && echo 'provided' || echo 'empty')"
     echo " Stripe key:      $([[ -n $STRIPE_API_KEY ]] && echo 'provided' || echo 'empty')"
-    echo " Emergent key:    $([[ -n $EMERGENT_LLM_KEY ]] && echo 'provided' || echo 'empty')"
     echo "----------------------------------"
     ask_yesno CONFIRM "Continue with these values?" "y"
     [[ "$CONFIRM" == "yes" ]] || die "Aborted by operator — re-run the command to try again."
@@ -195,8 +191,6 @@ LIVEKIT_URL=$LIVEKIT_URL
 
 STRIPE_API_KEY=$STRIPE_API_KEY
 STRIPE_CONNECT_WEBHOOK_SECRET=$STRIPE_CONNECT_WEBHOOK_SECRET
-
-EMERGENT_LLM_KEY=$EMERGENT_LLM_KEY
 EOF
     chmod 600 "$ENV_FILE"
     ok "Wrote $ENV_FILE (chmod 600)."

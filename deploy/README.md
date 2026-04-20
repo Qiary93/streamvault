@@ -85,7 +85,6 @@ stays disabled until you provide a key.
 | `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_URL` | https://cloud.livekit.io → Project Settings → Keys | OBS ingest, live video, VOD recording |
 | `STRIPE_API_KEY`                     | https://dashboard.stripe.com/apikeys                        | Donations, subscriptions, Connect payouts |
 | `STRIPE_CONNECT_WEBHOOK_SECRET`      | Dashboard → Developers → Webhooks → endpoint signing secret | Automated payout status updates |
-| `EMERGENT_LLM_KEY`                   | Provided by Emergent platform                               | Hosted object storage + universal LLM |
 
 Other integrations (SMTP, S3, ad networks) are configured **in the Admin UI**
 at `https://$DOMAIN/admin` once you're logged in — those don't need to live

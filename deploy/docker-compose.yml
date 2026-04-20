@@ -41,7 +41,6 @@ services:
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
       LIVEKIT_URL: ${LIVEKIT_URL:-}
-      EMERGENT_LLM_KEY: ${EMERGENT_LLM_KEY:-}
     networks:
       - sv-net
 
