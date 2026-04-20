@@ -7,8 +7,19 @@ WORKDIR /app
 ARG REACT_APP_BACKEND_URL
 ENV REACT_APP_BACKEND_URL=${REACT_APP_BACKEND_URL}
 
-COPY frontend/package.json frontend/yarn.lock /app/
-RUN yarn install --frozen-lockfile --network-timeout 600000
+# Copy ONLY package.json first (yarn.lock is optional — if missing, yarn will
+# resolve fresh). This keeps installs cached on package.json changes.
+COPY frontend/package.json /app/package.json
+# Copy yarn.lock if it exists in the build context. The wildcard lets the COPY
+# succeed even when the file is absent (BuildKit treats the pattern as "zero
+# or more matches").
+COPY frontend/yarn.loc[k] /app/
+
+RUN if [ -f /app/yarn.lock ]; then \
+      yarn install --frozen-lockfile --network-timeout 600000 ; \
+    else \
+      yarn install --network-timeout 600000 ; \
+    fi
 
 COPY frontend /app
 RUN yarn build
