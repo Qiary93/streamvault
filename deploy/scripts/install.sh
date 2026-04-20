@@ -75,6 +75,41 @@ if [[ "$ADMIN_PASSWORD" == CHANGE_ME* ]]; then
     die "ADMIN_PASSWORD is still the placeholder. Set a real strong password in $ENV_FILE."
 fi
 
+# -----------------------------------------------------------------------------
+# 3b. MongoDB credentials — auto-generate if missing (upgrade path for installs
+#     created before the auth-enabled compose file). If the user already has a
+#     running stack with an unauthenticated mongo volume, flipping auth on
+#     requires the volume to be re-initialized, so we warn loudly.
+# -----------------------------------------------------------------------------
+if [[ -z "${MONGO_ROOT_USER:-}" ]]; then
+    MONGO_ROOT_USER="svadmin"
+    echo "MONGO_ROOT_USER=$MONGO_ROOT_USER" >> "$ENV_FILE"
+    log "Added MONGO_ROOT_USER=$MONGO_ROOT_USER to $ENV_FILE"
+fi
+if [[ -z "${MONGO_ROOT_PASSWORD:-}" || "$MONGO_ROOT_PASSWORD" == CHANGE_ME* ]]; then
+    MONGO_ROOT_PASSWORD="$(openssl rand -hex 32)"
+    # strip any existing placeholder line then append
+    sed -i '/^MONGO_ROOT_PASSWORD=/d' "$ENV_FILE"
+    echo "MONGO_ROOT_PASSWORD=$MONGO_ROOT_PASSWORD" >> "$ENV_FILE"
+    log "Generated a new MONGO_ROOT_PASSWORD (written to $ENV_FILE)."
+    
+    # Detect a pre-existing no-auth mongo volume left over from an older install.
+    if docker volume inspect streamvault_mongo-data >/dev/null 2>&1; then
+        warn "An existing MongoDB volume was detected. MongoDB only applies the"
+        warn "root password on FIRST initialization, so an existing no-auth"
+        warn "volume will NOT pick up the new credentials and the backend will"
+        warn "fail to connect. To migrate, either:"
+        warn "  • Back up & wipe the volume (destroys data):"
+        warn "      sudo bash $DEPLOY_DIR/scripts/backup-mongo.sh"
+        warn "      docker compose -f $COMPOSE_FILE down"
+        warn "      docker volume rm streamvault_mongo-data streamvault_mongo-config"
+        warn "  • OR keep no-auth: set MONGO_ROOT_PASSWORD=\"\" in $ENV_FILE and"
+        warn "    revert docker-compose.yml to not enable auth (not recommended)."
+        read -r -p "Continue anyway? [y/N] " yn
+        [[ "$yn" == [yY]* ]] || die "Aborted by operator."
+    fi
+fi
+
 log "Domain:       $DOMAIN"
 log "Admin email:  $ADMIN_EMAIL"
 

@@ -10,10 +10,27 @@ services:
       - mongo-config:/data/configdb
     environment:
       MONGO_INITDB_DATABASE: ${DB_NAME:-streamvault}
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-svadmin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+    # Expose ONLY to the server's loopback — reach it from your laptop via an
+    # SSH tunnel in Navicat/MongoDB Compass. Never change this to 0.0.0.0.
+    ports:
+      - "127.0.0.1:27017:27017"
     networks:
       - sv-net
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      test:
+        - "CMD"
+        - "mongosh"
+        - "--quiet"
+        - "-u"
+        - "${MONGO_ROOT_USER:-svadmin}"
+        - "-p"
+        - "${MONGO_ROOT_PASSWORD}"
+        - "--authenticationDatabase"
+        - "admin"
+        - "--eval"
+        - "db.adminCommand('ping').ok"
       interval: 10s
       timeout: 5s
       retries: 10
@@ -29,7 +46,7 @@ services:
       mongo:
         condition: service_healthy
     environment:
-      MONGO_URL: mongodb://mongo:27017
+      MONGO_URL: "mongodb://${MONGO_ROOT_USER:-svadmin}:${MONGO_ROOT_PASSWORD}@mongo:27017/?authSource=admin"
       DB_NAME: ${DB_NAME:-streamvault}
       CORS_ORIGINS: "https://${DOMAIN}"
       FRONTEND_URL: "https://${DOMAIN}"

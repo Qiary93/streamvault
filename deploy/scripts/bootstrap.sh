@@ -159,6 +159,9 @@ else
 
     JWT_SECRET="$(openssl rand -hex 48)"
     log "Generated JWT_SECRET (48 random bytes)."
+    MONGO_ROOT_USER="svadmin"
+    MONGO_ROOT_PASSWORD="$(openssl rand -hex 32)"
+    log "Generated MongoDB root password (32 random bytes)."
 
     # -----------------------------------------------------------------------------
     # Step 4 — Confirm + write .env
@@ -181,6 +184,8 @@ else
 DOMAIN=$DOMAIN
 LETSENCRYPT_EMAIL=$LETSENCRYPT_EMAIL
 DB_NAME=streamvault
+MONGO_ROOT_USER=$MONGO_ROOT_USER
+MONGO_ROOT_PASSWORD=$MONGO_ROOT_PASSWORD
 JWT_SECRET=$JWT_SECRET
 ADMIN_EMAIL=$ADMIN_EMAIL
 ADMIN_PASSWORD=$ADMIN_PASSWORD

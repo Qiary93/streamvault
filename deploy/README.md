@@ -158,6 +158,53 @@ docker compose -f deploy/docker-compose.yml exec certbot \
 See [ADMIN_SETUP.md](./ADMIN_SETUP.md) for how the admin account is seeded
 and how to change it.
 
+## 7b. Connect Navicat / MongoDB Compass to your database
+
+The `mongo` container binds `27017` to `127.0.0.1` on the VPS — not reachable
+from the public internet. Connect via an **SSH tunnel** from your laptop:
+
+**Navicat → New Connection → MongoDB:**
+```
+General tab
+  Host:     127.0.0.1
+  Port:     27017
+  Database: streamvault
+  Auth:     Password
+  Username: svadmin                          ← value of MONGO_ROOT_USER in .env
+  Password: <from MONGO_ROOT_PASSWORD in .env>
+  Auth DB:  admin
+
+SSH tab  (check "Use SSH Tunnel")
+  Host:     <your-vps-public-ip>
+  Port:     22
+  User:     root  (or your sudo user)
+  Auth:     Password or Private Key
+```
+
+To read the generated password on the VPS:
+
+```bash
+grep MONGO_ROOT_PASSWORD /opt/streamvault/deploy/.env
+```
+
+**MongoDB Compass** — same values, paste this URI (with your password
+URL-encoded if it contains special chars):
+
+```
+mongodb://svadmin:YOUR_PASSWORD@127.0.0.1:27017/streamvault?authSource=admin
+```
+
+…and configure Compass's built-in SSH tunnel to your VPS.
+
+**Shell access (no GUI needed):**
+```bash
+docker exec -it sv-mongo mongosh \
+    -u svadmin \
+    -p "$(grep MONGO_ROOT_PASSWORD /opt/streamvault/deploy/.env | cut -d= -f2)" \
+    --authenticationDatabase admin \
+    streamvault
+```
+
 ## 8. Troubleshooting
 
 | Symptom | Fix |
