@@ -135,3 +135,7 @@ credentials.json
 *.pem
 *.key
 .credentials
+
+# Allow the deployment template .env (secrets-free) to be committed
+!deploy/.env.example
+!**/.env.example

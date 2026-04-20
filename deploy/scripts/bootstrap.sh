@@ -63,7 +63,29 @@ fi
 
 cd "$INSTALL_DIR"
 
-[[ -f "deploy/.env.example" ]] || die "deploy/.env.example missing in the repo — wrong branch?"
+# If .env.example is missing (e.g. repo pushed before it was tracked, or
+# git-ignored by an overly broad rule), regenerate it from a built-in fallback.
+if [[ ! -f "deploy/.env.example" ]]; then
+    warn "deploy/.env.example missing in the repo — regenerating a local copy."
+    mkdir -p deploy
+    cat > deploy/.env.example <<'ENVEXAMPLE'
+# StreamVault — production environment configuration
+DOMAIN=streamvault.example.com
+LETSENCRYPT_EMAIL=admin@example.com
+DB_NAME=streamvault
+JWT_SECRET=CHANGE_ME_generate_with_openssl_rand_hex_48
+ADMIN_EMAIL=admin@streamvault.local
+ADMIN_PASSWORD=CHANGE_ME_Strong_Password!
+LIVEKIT_API_KEY=
+LIVEKIT_API_SECRET=
+LIVEKIT_URL=
+STRIPE_API_KEY=
+STRIPE_CONNECT_WEBHOOK_SECRET=
+EMERGENT_LLM_KEY=
+ENVEXAMPLE
+    ok "Regenerated deploy/.env.example"
+fi
+
 [[ -f "deploy/scripts/install.sh" ]] || die "deploy/scripts/install.sh missing in the repo — wrong branch?"
 
 # -----------------------------------------------------------------------------
