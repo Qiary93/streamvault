@@ -25,9 +25,16 @@ from livekit.api import AccessToken, VideoGrants, LiveKitAPI
 from livekit.protocol.ingress import CreateIngressRequest, IngressInput
 
 # Stripe integration
-from emergentintegrations.payments.stripe.checkout import (
-    StripeCheckout, CheckoutSessionResponse, CheckoutStatusResponse, CheckoutSessionRequest
-)
+try:
+    from emergentintegrations.payments.stripe.checkout import (
+        StripeCheckout, CheckoutSessionResponse, CheckoutStatusResponse, CheckoutSessionRequest
+    )
+except ImportError:
+    # Self-hosted / non-Emergent environments use the local shim (implemented
+    # on top of the standard `stripe` SDK).
+    from stripe_shim import (
+        StripeCheckout, CheckoutSessionResponse, CheckoutStatusResponse, CheckoutSessionRequest
+    )
 import stripe as stripe_sdk
 stripe_sdk.api_key = os.environ.get("STRIPE_API_KEY", "")
 
