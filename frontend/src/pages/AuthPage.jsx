@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { Broadcast, Envelope, Lock, User, GoogleLogo } from '@phosphor-icons/react';
 import { Button } from '../components/ui/button';
@@ -192,6 +192,13 @@ export default function AuthPage() {
                   data-testid="password-input"
                 />
               </div>
+              {mode === 'login' && (
+                <div className="flex justify-end mt-2">
+                  <Link to="/forgot-password" className="text-xs text-[#00E5FF] hover:underline" data-testid="forgot-password-link">
+                    Forgot password?
+                  </Link>
+                </div>
+              )}
             </div>
 
             <Button

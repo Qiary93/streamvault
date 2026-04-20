@@ -4,99 +4,68 @@
 Build a Kick.com-style livestream platform: real-time video (LiveKit/WebRTC), WebSocket chat, streamer profiles, VOD recording, custom tipping/donations, subscription tiers, admin panel. Plus incremental feature releases (revenue analytics, Stripe Connect payouts, ad monetization, emotes, chat moderation, achievements, streamer path, real-time chat rules sync, VAST ads, etc.).
 
 ## Tech Stack
-- Backend: FastAPI, Motor (MongoDB), LiveKit SDK, Stripe 15.x (incl. Connect Custom + webhooks), emergentintegrations
+- Backend: FastAPI, Motor (MongoDB, tz_aware), LiveKit SDK, Stripe 15.x (incl. Connect Custom + webhooks), emergentintegrations
 - Frontend: React + Tailwind + shadcn/ui + Recharts + Phosphor icons + livekit-components-react
 - Cloud: LiveKit Cloud, Stripe, Wasabi/S3, Emergent object storage
 
 ## What's Implemented
 
+### Feb 2026 — Global broadcasting sync, Timer TZ fix, Chat enhancements, SMTP expansion, Top Donors move
+- **Global broadcasting sync** — new background task `broadcasting_sync_loop` polls LiveKit every 30s for *every* `is_live` stream and updates `broadcasting` / `broadcasting_started_at` / `broadcasting_ended_at` globally. Viewers now see streams in Recommended even when the streamer's dashboard is closed. Probe logic extracted to `_probe_livekit_broadcasting` (used by both the background loop and the existing `/check-broadcast` endpoint).
+- **Live Timer TZ fix** — `AsyncIOMotorClient` now uses `tz_aware=True, tzinfo=timezone.utc`, so MongoDB datetimes return with UTC tzinfo and FastAPI serializes them with `+00:00`. Fixes the "Time Live" timer starting at 3h on clients in non-UTC zones.
+- **Chat enhancements**
+  - Inline subscriber tier badges in chat (custom `badge_url` if uploaded, otherwise a star icon).
+  - Random per-user color for subscriber usernames (20-color palette, deterministic hash of user_id).
+  - Donation announcement messages (`donation_alert`) with heart/like reactions (`POST /api/streams/{stream_id}/chat/{message_id}/heart`) and realtime `reaction_update` WS events.
+  - Subscription announcement messages (`subscription_alert`) rendered as a purple banner with tier name + badge.
+- **SMTP expansion**
+  - **Password reset flow**: `POST /api/auth/forgot-password` + `POST /api/auth/reset-password` (60-minute token, enumeration-safe). New `/forgot-password` and `/reset-password` pages; "Forgot password?" link on login.
+  - **Welcome email** sent on successful `POST /api/auth/verify-email` (first-time verification).
+  - **Rate limit on `/auth/resend-verification`** (60-second cooldown, HTTP 429).
+  - **Configurable email templates** via `admin_config` `type: "email_templates"` doc (`verification`, `welcome`, `password_reset`), with subject/html/text and `{display_name}`, `{verify_url}`, `{reset_url}`, `{site_url}`, `{email}` variables. New `GET/PUT /api/admin/email-templates` and `AdminEmailTemplates` panel inside AdminPage.
+- **Top Donors moved** from `ProfilePage` to `DashboardPage` (now under "Recent Donations" section).
+
 ### Feb 2026 — SMTP / Email verification, Tier badges, Live Timer, 60 emote limit
-- **Admin SMTP Settings** — `/api/admin/smtp-settings` GET/PUT + `/api/admin/smtp-test` endpoints. Frontend `AdminSmtpSettings.jsx` with host/port/user/password/from_email/from_name/STARTTLS/SSL controls. Password-masked (`••••••••` placeholder preserves existing value).
-- **Email verification flow** — when SMTP is enabled, `POST /api/auth/register` sets `email_verified=false`, generates token, sends verification email (aiosmtplib), returns `{verification_required:true}` without cookies. `POST /api/auth/login` returns 403 until verified. `POST /api/auth/verify-email` activates the account. `POST /api/auth/resend-verification` re-issues token + email. Frontend `/verify-email?token=X` page + AuthPage toast flow. Seed backfills `email_verified=True` on legacy accounts; Google OAuth auto-verifies.
-- **Subscription Tier Badges** — `POST/DELETE /api/my/tiers/{tier_id}/badge` (max 256KB). `POST /api/my/subscription-tiers` now preserves badge_url across saves by matching on tier_id (and fallback by name). Frontend SubscriptionTiersSettings has per-tier "Badge 32×32" upload button. StreamPage subscribe modal shows the badge next to the tier perks description.
-- **Emote limit raised** — 20 → 60 per streamer (backend + EmojiUploadSection UI).
-- **Removed global "Sub" emote tab** from chat emoji picker (platform-wide subscriber emotes no longer surface in UI; streamer custom emotes remain the subs-gated option).
-- **Dashboard "Time Live"** — under Stream Status card, `LiveTimer.jsx` component counts from `broadcasting_started_at` and resets when OBS disconnects (showing `--:--`).
-- **Stream Player broadcasting timer** — left overlay on video player shows elapsed broadcasting time in real-time alongside the LIVE badge.
-- **Stream lifecycle fields** — `broadcasting_started_at` / `broadcasting_ended_at` set automatically on `/check-broadcast` transitions, manual toggle, and end-stream. `/check-broadcast` response now includes `broadcasting_started_at` for immediate timer sync.
+- **Admin SMTP Settings** — `/api/admin/smtp-settings` GET/PUT + `/api/admin/smtp-test` endpoints.
+- **Email verification flow** — register → verification token email → `/verify-email` → account active.
+- **Subscription Tier Badges** — `POST/DELETE /api/my/tiers/{tier_id}/badge` (max 256KB). Badge shown in subscribe modal.
+- **Emote limit raised** — 20 → 60 per streamer.
+- **Dashboard "Time Live"** & **Stream Player broadcasting timer** — `LiveTimer.jsx`, resets when OBS disconnects.
 
 ### Feb 2026 — IMA SDK, Level-up confetti, Profile feed, Leaderboards, Game autocomplete, SSRF hardening
-- **SSRF-hardened VAST resolver** — `/api/ads/vast/resolve` now blocks private / loopback / link-local / multicast / reserved IP addresses (including metadata `169.254.169.254`), rejects non-http(s) schemes, and revalidates redirect targets.
-- **Google IMA SDK ad type** — new `ad_type='ima'` in admin monetization. `AdPlayer.jsx` lazy-loads `ima3.js` and uses `AdsLoader` + `AdsManager` for full VAST/VPAID/adaptive-streaming/companion support.
-- **Level-up confetti + notifications + auto-post to profile feed** — Backend helper `_detect_and_notify_grade_change` detects grade improvements via a `user_grade_cache` collection, inserts a `level_up` notification, and auto-posts to `profile_feed`. Frontend `LevelUpListener` (mounted globally) polls achievements + unread notifications every 15s and fires `canvas-confetti` + a sonner toast when a new grade unlocks.
-- **Profile Feed** — `GET /api/users/{id}/feed` (public), `POST /api/my/feed`, `DELETE /api/my/feed/{id}`. Own-profile input on `ProfilePage`. Level-up posts render with a trophy icon.
-- **Top-donor leaderboards** — `GET /api/leaderboard/donors?streamer_id=X&period=all|month|week` with rank, avatar, verified grade badge, total amount, donation count. Streamer profile pages show a `DonorsLeaderboard` panel. Also `/leaderboard/subscribers` for top streamers/subscribers.
-- **Games autocomplete** — `GET /api/games/search?q=...` from a curated 70+ popular titles list. Dashboard stream-setup Game Name field now uses `GameNameAutocomplete` with keyboard navigation.
-- **Notifications endpoint** — now supports `?unread=true` filter for efficient polling.
+- SSRF-hardened VAST resolver.
+- Google IMA SDK ad type, level-up confetti + notifications + auto-post to profile feed.
+- Profile feed, top-donor leaderboards, games autocomplete.
 
-### Feb 2026 — Achievements, Path, Followers sidebar, Real-time chat sync, VAST ads, Ad opt-out, Admin Other Settings
-- **Achievements** — 4 grades (Beginner/Intermediate/Advanced/Expert) with 3 missions each. Public `GET /api/users/{id}/achievements` + `GET /api/my/achievements`. Green triangle = done, red triangle = pending. Earning any grade awards a **Verified** badge next to the user's display name on profile.
-- **Path to a perfect streamer** — Dashboard section (under Recent Donations) showing 4 streamer missions (50 subs, 500 followers, 300 OBS hours, 500 unique chatters) over last 12 months. `GET /api/my/streamer-path`.
-- **Recommended sidebar (home)** — filters to `broadcasting=true` + `is_live=true` only, shows a green dot, viewer count, and game name below the streamer name. `GET /api/recommended` returns enriched objects.
-- **Left sidebar** — "Categories" section replaced with "Followers (N)" listing users you follow. Show more / Show less (+10 / reset to 10). Live followers are sorted first with green dot + viewer count + game name. `GET /api/my/following`.
-- **Real-time chat rules sync** — when a streamer saves chat settings, the backend broadcasts `chat_settings_updated` to the live chat WebSocket. ChatBox re-fetches rules and forces re-acceptance on rule change.
-- **Chat moderation additions** — `followers_only`, `subscribers_only` toggles enforce in the WS chat path. `restricted_words` list with `restricted_words_mode` = `filter` (replace with `***`) or `block` (reject the message entirely).
-- **VAST ads** — new ad type `vast` with `vast_url` field. Platform fetches the VAST XML server-side via `GET /api/ads/vast/resolve` (basic VAST 2/3/4 MediaFile + Duration + ClickThrough parsing) and plays the returned creative.
-- **Streamer ad opt-out** — `GET/PUT /api/my/ad-opt-out`. When `opt_out=true`, `GET /api/ads/active?stream_id=X` returns no ad for that streamer's streams/VODs.
-- **Admin "Other Settings"** — above Monetization: toggles for `achievements_enabled` + `path_enabled`. Public `GET /api/config/features` exposes the toggles so frontend hides sections accordingly.
-- **Category images** — replaced broken Pexels URLs (VALORANT, Slots & Casino, Rust, Dark and Darker, Tarkov, Stellar Blade).
-- **Stripe Connect webhook** (previously added) — `/api/webhook/stripe/connect` handles `account.updated`, `payout.paid`, `payout.failed`.
+### Earlier
+- Achievements, Path, Followers sidebar, Real-time chat sync, VAST ads, Ad opt-out, Admin Other Settings, Stripe Connect automated payouts, IMA/VAST ad monetization, chat moderation (followers-only, subs-only, restricted words), custom emotes, PiP/Clip/Theatre controls, VOD recording, Category seed (40+).
 
-### Earlier feature releases
-- Revenue analytics charts (Recharts line/bar, daily/weekly/monthly)
-- Stripe Connect Custom onboarding + automated payouts toggle in admin
-- Ad monetization (CPM table, ad creatives admin editor, streamer dashboard Monetization section, ad impression tracking with 30s dedup)
-- 20 blue subscriber-only emotes + streamer custom emote upload (max 20, subs-only flag)
-- Per-streamer chat settings + rules accept-gate
-- Clips (still-frame + marker MVP)
-- Stream player Picture-in-Picture / Clip (C) / Theatre (T) controls + keyboard shortcuts
-- LiveKit WebRTC, OBS WHIP ingress, VOD recording, subscription tiers, donations, revenue tracker + manual withdrawals
-- Full Kick-style category seed (40+)
-- HomePage "Top 12 Popular Categories"
-
-## Key API Endpoints
-### Newest (Feb 2026 — this release)
-- `GET /api/recommended` (now returns only `broadcasting=true` live streams with viewer_count + game_name)
-- `GET /api/my/following`
-- `GET /api/my/achievements`, `GET /api/users/{id}/achievements`
-- `GET /api/my/streamer-path`
-- `GET/PUT /api/my/ad-opt-out`
-- `GET /api/ads/active?placement=X&stream_id=Y` (respects streamer opt-out)
-- `GET /api/ads/vast/resolve?url=X`
-- `GET/PUT /api/admin/other-settings`
-- `GET /api/config/features`
-- `GET/PUT /api/my/chat-settings` (now with followers_only, subscribers_only, restricted_words, restricted_words_mode)
+## Key API Endpoints — Feb 2026 (this release)
+- `POST /api/auth/forgot-password`, `POST /api/auth/reset-password`
+- `GET /api/admin/email-templates`, `PUT /api/admin/email-templates`
+- `POST /api/streams/{stream_id}/chat/{message_id}/heart` (toggle heart on a donation/chat message)
+- Background task: `broadcasting_sync_loop` (no HTTP endpoint)
 
 ## Data Models — new/updated
-- `chat_settings`: adds `followers_only`, `subscribers_only`, `restricted_words`, `restricted_words_mode`
-- `admin_config` type `other_settings`: `{achievements_enabled, path_enabled}`
-- `streamer_ad_prefs`: `{user_id, opt_out}`
-- `stream_chatters`: `{streamer_id, user_id, first_seen, last_seen}` (tracks unique chatters for streamer Path mission)
+- `users`: `password_reset_token`, `password_reset_expires`, `password_reset_sent_at`
+- `admin_config` type `email_templates`: `{templates: {verification|welcome|password_reset: {subject, html, text}}}`
+- `chat_messages` types: `donation_alert`, `subscription_alert`, `reaction_update` (WS only) — `donation_alert` has `amount`, `content`, `hearts`
+- `chat_hearts`: `{message_id, stream_id, user_id, created_at}` (reaction ledger)
 
 ## Test Credentials
 See `/app/memory/test_credentials.md`
 
 ## Roadmap
-### P1 (next)
-- Rename minor admin/monetization testids to match spec
-- Seed `broadcasting=true` demo streams so live-only UI flows are easier to demo
-- SSRF hardening on `/ads/vast/resolve` (allow-list domains + block private IP ranges)
-- Ensure `created_at` is always set on `follows` documents
 
-### P2 (later)
-- Split `server.py` (now 4000+ lines) into routers (achievements, streamer_path, followers, admin_other_settings, ad_optout, vast_resolver, chat, emotes, clips, monetization, webhooks)
+### P1
+- Stream sorting (viewers, newest)
+- Split `server.py` (now ~4900 lines) into routers
+
+### P2
 - True last-30s MP4 clips via LiveKit Egress
-- Full IMA SDK / Google Ad Manager integration (current VAST resolver covers most tags)
 - Achievement progression notifications + email
-- Leaderboards for top donators / subscribers
-
-### Backlog
-- Stream sorting (viewers, newest), game name autocomplete
 - Payout scheduling (daily/weekly auto-sweeps)
-- CSP review of HTML ad code injection surface
 
 ## Project Health
 - Broken: None
 - Mocked: None (real LiveKit + Stripe + S3 + MongoDB)
-- Backend: 20/20 tests passed (iteration 6)
-- Frontend: all UI sections rendered correctly (iteration 6)

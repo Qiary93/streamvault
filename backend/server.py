@@ -35,7 +35,7 @@ ROOT_DIR = Path(__file__).parent
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
+client = AsyncIOMotorClient(mongo_url, tz_aware=True, tzinfo=timezone.utc)
 db = client[os.environ['DB_NAME']]
 
 # JWT Configuration
@@ -442,10 +442,19 @@ async def verify_email(request: Request):
     if not user:
         raise HTTPException(status_code=400, detail="Invalid or expired verification token")
     
+    was_verified = bool(user.get("email_verified"))
     await db.users.update_one(
         {"user_id": user["user_id"]},
         {"$set": {"email_verified": True}, "$unset": {"verification_token": ""}}
     )
+    # Send welcome email on first verification (best-effort, SMTP optional)
+    if not was_verified:
+        smtp_cfg = await db.admin_config.find_one({"type": "smtp"}, {"_id": 0})
+        if smtp_cfg and smtp_cfg.get("enabled"):
+            try:
+                await send_welcome_email(user["email"], user.get("display_name") or user.get("username"))
+            except Exception as e:
+                logger.debug(f"welcome email dispatch failed: {e}")
     return {"message": "Email verified. You can now log in.", "email": user["email"]}
 
 
@@ -464,6 +473,19 @@ async def resend_verification(request: Request):
     if user.get("email_verified") is not False:
         return {"message": "Email is already verified."}
     
+    # Rate limit: 60s between resend attempts per account
+    last_sent = user.get("verification_sent_at")
+    if isinstance(last_sent, str):
+        try: last_sent = datetime.fromisoformat(last_sent.replace("Z", "+00:00"))
+        except: last_sent = None
+    if last_sent:
+        if last_sent.tzinfo is None:
+            last_sent = last_sent.replace(tzinfo=timezone.utc)
+        elapsed = (datetime.now(timezone.utc) - last_sent).total_seconds()
+        if elapsed < 60:
+            wait = int(60 - elapsed)
+            raise HTTPException(status_code=429, detail=f"Please wait {wait}s before requesting another verification email.")
+    
     smtp_cfg = await db.admin_config.find_one({"type": "smtp"}, {"_id": 0})
     if not (smtp_cfg and smtp_cfg.get("enabled")):
         raise HTTPException(status_code=503, detail="Email verification is not configured on this instance.")
@@ -479,6 +501,82 @@ async def resend_verification(request: Request):
         logger.error(f"Resend email failed: {e}")
         raise HTTPException(status_code=500, detail="Could not send verification email")
     return {"message": "Verification email re-sent."}
+
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(request: Request):
+    body = await request.json()
+    email = str(body.get("email", "")).lower().strip()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email required")
+    
+    smtp_cfg = await db.admin_config.find_one({"type": "smtp"}, {"_id": 0})
+    if not (smtp_cfg and smtp_cfg.get("enabled")):
+        raise HTTPException(status_code=503, detail="Password reset is not configured on this instance.")
+    
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    if not user:
+        # Enumeration-safe response
+        return {"message": "If an account with that email exists, a reset link has been sent."}
+    
+    # Rate limit 60s
+    last = user.get("password_reset_sent_at")
+    if isinstance(last, str):
+        try: last = datetime.fromisoformat(last.replace("Z", "+00:00"))
+        except: last = None
+    if last:
+        if last.tzinfo is None: last = last.replace(tzinfo=timezone.utc)
+        if (datetime.now(timezone.utc) - last).total_seconds() < 60:
+            return {"message": "If an account with that email exists, a reset link has been sent."}
+    
+    token = secrets.token_urlsafe(32)
+    expires = datetime.now(timezone.utc) + timedelta(minutes=60)
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {
+            "password_reset_token": token,
+            "password_reset_expires": expires,
+            "password_reset_sent_at": datetime.now(timezone.utc),
+        }},
+    )
+    try:
+        await send_password_reset_email(email, user.get("display_name") or user.get("username"), token)
+    except Exception as e:
+        logger.error(f"Password reset email failed: {e}")
+        raise HTTPException(status_code=500, detail="Could not send reset email")
+    return {"message": "If an account with that email exists, a reset link has been sent."}
+
+
+@api_router.post("/auth/reset-password")
+async def reset_password(request: Request):
+    body = await request.json()
+    token = str(body.get("token", "")).strip()
+    new_password = str(body.get("password", ""))
+    if not token or len(token) < 20:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    
+    user = await db.users.find_one({"password_reset_token": token}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+    
+    expires = user.get("password_reset_expires")
+    if isinstance(expires, str):
+        try: expires = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+        except: expires = None
+    if not expires or (expires.tzinfo is None and expires.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc)) or (expires.tzinfo and expires < datetime.now(timezone.utc)):
+        raise HTTPException(status_code=400, detail="Reset token has expired")
+    
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {
+            "$set": {"password_hash": hash_password(new_password), "email_verified": True},
+            "$unset": {"password_reset_token": "", "password_reset_expires": "", "password_reset_sent_at": ""},
+        },
+    )
+    return {"message": "Password updated. You can now log in."}
+
 
 @api_router.post("/auth/logout")
 async def logout():
@@ -956,6 +1054,95 @@ async def end_stream(stream_id: str, user: dict = Depends(get_current_user)):
     
     return {"message": "Stream ended"}
 
+
+# ============= BROADCASTING STATUS HELPERS =============
+
+async def _probe_livekit_broadcasting(ingress_id: Optional[str], room_name: Optional[str]):
+    """Return (is_broadcasting, ingress_status) by probing LiveKit ingress + room participants."""
+    from livekit.protocol.ingress import ListIngressRequest
+    from livekit.protocol.room import ListParticipantsRequest
+    
+    now_broadcasting = False
+    status = 0
+    
+    if not (LIVEKIT_API_KEY and LIVEKIT_API_SECRET and LIVEKIT_URL):
+        return now_broadcasting, status
+    
+    try:
+        async with LiveKitAPI(
+            url=LIVEKIT_URL,
+            api_key=LIVEKIT_API_KEY,
+            api_secret=LIVEKIT_API_SECRET,
+        ) as lkapi:
+            # Method 1: Check ingress status
+            if ingress_id:
+                try:
+                    result = await lkapi.ingress.list_ingress(ListIngressRequest(ingress_id=ingress_id))
+                    ingress_list = result.items if hasattr(result, 'items') else []
+                    if len(ingress_list) > 0:
+                        ingress = ingress_list[0]
+                        status = ingress.state.status if ingress.state else 0
+                        if status >= 1:
+                            now_broadcasting = True
+                except Exception as ie:
+                    logger.debug(f"Ingress probe failed: {ie}")
+            
+            # Method 2: Check room participants (fallback/confirm)
+            if not now_broadcasting and room_name:
+                try:
+                    participants = await lkapi.room.list_participants(ListParticipantsRequest(room=room_name))
+                    p_list = participants.participants if hasattr(participants, 'participants') else []
+                    for p in p_list:
+                        if p.tracks and len(p.tracks) > 0:
+                            now_broadcasting = True
+                            status = 2
+                            break
+                except Exception as pe:
+                    logger.debug(f"Participants probe failed: {pe}")
+    except Exception as e:
+        logger.debug(f"LiveKit probe error: {e}")
+    
+    return now_broadcasting, status
+
+
+async def _apply_broadcasting_update(stream_id: str, now_broadcasting: bool):
+    """Persist broadcasting flag + timestamps transition for a stream."""
+    update = {"broadcasting": now_broadcasting}
+    if now_broadcasting:
+        update["broadcasting_started_at"] = datetime.now(timezone.utc)
+        update["broadcasting_ended_at"] = None
+    else:
+        update["broadcasting_ended_at"] = datetime.now(timezone.utc)
+    await db.streams.update_one({"stream_id": stream_id}, {"$set": update})
+
+
+async def broadcasting_sync_loop():
+    """Background task: periodically poll LiveKit for every is_live stream and update broadcasting flag.
+    This ensures viewers see live streams in Recommended even when the streamer's dashboard is closed."""
+    await asyncio.sleep(10)  # let startup settle
+    while True:
+        try:
+            live_streams = await db.streams.find(
+                {"is_live": True},
+                {"_id": 0, "stream_id": 1, "ingress_id": 1, "room_name": 1, "broadcasting": 1, "user_id": 1},
+            ).to_list(200)
+            
+            for s in live_streams:
+                try:
+                    now_b, _ = await _probe_livekit_broadcasting(s.get("ingress_id"), s.get("room_name"))
+                    prev_b = bool(s.get("broadcasting", False))
+                    if now_b != prev_b:
+                        await _apply_broadcasting_update(s["stream_id"], now_b)
+                        logger.info(f"[bg] stream {s['stream_id']} broadcasting transition: {prev_b} -> {now_b}")
+                except Exception as e:
+                    logger.debug(f"[bg] probe error for {s.get('stream_id')}: {e}")
+        except Exception as e:
+            logger.error(f"broadcasting_sync_loop iteration error: {e}")
+        
+        await asyncio.sleep(30)
+
+
+
 @api_router.get("/streams/{stream_id}/check-broadcast")
 async def check_broadcast_status(stream_id: str):
     """Check if the streamer is actually broadcasting (connected via OBS)."""
@@ -970,58 +1157,15 @@ async def check_broadcast_status(stream_id: str):
         return {"broadcasting": is_broadcasting}
     
     try:
-        from livekit.protocol.ingress import ListIngressRequest
-        from livekit.protocol.room import ListParticipantsRequest
-        
-        now_broadcasting = False
-        status = 0
-        
-        async with LiveKitAPI(
-            url=LIVEKIT_URL,
-            api_key=LIVEKIT_API_KEY,
-            api_secret=LIVEKIT_API_SECRET
-        ) as lkapi:
-            # Method 1: Check ingress status
-            try:
-                result = await lkapi.ingress.list_ingress(ListIngressRequest(ingress_id=ingress_id))
-                ingress_list = result.items if hasattr(result, 'items') else []
-                
-                if len(ingress_list) > 0:
-                    ingress = ingress_list[0]
-                    status = ingress.state.status if ingress.state else 0
-                    if status >= 1:
-                        now_broadcasting = True
-            except Exception as ie:
-                logger.warning(f"Ingress check failed: {ie}")
-            
-            # Method 2: Check room participants (fallback)
-            if not now_broadcasting:
-                room_name = stream.get("room_name", f"stream_{stream_id}")
-                try:
-                    participants = await lkapi.room.list_participants(ListParticipantsRequest(room=room_name))
-                    p_list = participants.participants if hasattr(participants, 'participants') else []
-                    # If any participant is publishing, they're broadcasting
-                    for p in p_list:
-                        if p.tracks and len(p.tracks) > 0:
-                            now_broadcasting = True
-                            status = 2
-                            break
-                except Exception as pe:
-                    logger.debug(f"Room participants check: {pe}")
+        now_broadcasting, status = await _probe_livekit_broadcasting(
+            ingress_id=ingress_id,
+            room_name=stream.get("room_name", f"stream_{stream_id}"),
+        )
         
         logger.info(f"Broadcast check for {stream_id}: ingress_status={status}, broadcasting={now_broadcasting}")
         
         if now_broadcasting != is_broadcasting:
-            update = {"broadcasting": now_broadcasting}
-            if now_broadcasting:
-                update["broadcasting_started_at"] = datetime.now(timezone.utc)
-                update["broadcasting_ended_at"] = None
-            else:
-                update["broadcasting_ended_at"] = datetime.now(timezone.utc)
-            await db.streams.update_one(
-                {"stream_id": stream_id},
-                {"$set": update}
-            )
+            await _apply_broadcasting_update(stream_id, now_broadcasting)
             if now_broadcasting:
                 logger.info(f"Stream {stream_id} is now broadcasting!")
         
@@ -1030,6 +1174,8 @@ async def check_broadcast_status(stream_id: str):
             fresh = await db.streams.find_one({"stream_id": stream_id}, {"_id": 0, "broadcasting_started_at": 1})
             started_at = fresh.get("broadcasting_started_at") if fresh else None
             if isinstance(started_at, datetime):
+                if started_at.tzinfo is None:
+                    started_at = started_at.replace(tzinfo=timezone.utc)
                 started_at = started_at.isoformat()
             return {"broadcasting": True, "ingress_status": status, "broadcasting_started_at": started_at}
         
@@ -1144,6 +1290,43 @@ async def send_chat_message(stream_id: str, message: ChatMessage, user: dict = D
     
     return message_doc
 
+@api_router.post("/streams/{stream_id}/chat/{message_id}/heart")
+async def heart_chat_message(stream_id: str, message_id: str, user: dict = Depends(get_current_user)):
+    """Toggle a heart/like on a chat message (primarily for donation_alert messages)."""
+    msg = await db.chat_messages.find_one({"stream_id": stream_id, "message_id": message_id}, {"_id": 0})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    
+    existing = await db.chat_hearts.find_one({"message_id": message_id, "user_id": user["user_id"]})
+    if existing:
+        await db.chat_hearts.delete_one({"_id": existing["_id"]})
+        await db.chat_messages.update_one(
+            {"message_id": message_id, "hearts": {"$gt": 0}},
+            {"$inc": {"hearts": -1}},
+        )
+        hearted = False
+    else:
+        await db.chat_hearts.insert_one({
+            "message_id": message_id,
+            "stream_id": stream_id,
+            "user_id": user["user_id"],
+            "created_at": datetime.now(timezone.utc),
+        })
+        await db.chat_messages.update_one({"message_id": message_id}, {"$inc": {"hearts": 1}})
+        hearted = True
+    
+    fresh = await db.chat_messages.find_one({"message_id": message_id}, {"_id": 0, "hearts": 1})
+    hearts = int((fresh or {}).get("hearts") or 0)
+    # Broadcast reaction update to all connected WS clients
+    await chat_manager.broadcast(stream_id, {
+        "type": "reaction_update",
+        "message_id": message_id,
+        "hearts": hearts,
+    })
+    return {"message_id": message_id, "hearts": hearts, "hearted": hearted}
+
+
+
 # ============= DONATION ROUTES =============
 
 DONATION_AMOUNTS = {
@@ -1255,6 +1438,24 @@ async def get_donation_status(session_id: str, user: dict = Depends(get_current_
                 "read": False,
                 "created_at": datetime.now(timezone.utc)
             })
+            
+            # Broadcast donation announcement to the streamer's live chat
+            try:
+                live_stream = await db.streams.find_one(
+                    {"user_id": txn["streamer_id"], "is_live": True},
+                    {"_id": 0, "stream_id": 1},
+                )
+                if live_stream:
+                    donor = await db.users.find_one({"user_id": txn["donor_id"]}, {"_id": 0, "avatar_url": 1})
+                    await broadcast_donation_alert(
+                        stream_id=live_stream["stream_id"],
+                        donor_username=txn["donor_username"],
+                        amount=txn["amount"],
+                        message=txn.get("message") or "",
+                        donor_avatar=(donor or {}).get("avatar_url"),
+                    )
+            except Exception as e:
+                logger.debug(f"donation chat broadcast failed: {e}")
     
     return {
         "status": status.status,
@@ -1835,6 +2036,86 @@ async def get_viewer_livekit_token(request: Request):
         "server_url": LIVEKIT_URL
     }
 
+
+# ============= CHAT ENRICHMENT HELPERS =============
+
+SUB_COLOR_PALETTE = [
+    "#FF6B6B", "#4ECDC4", "#FFE66D", "#95E1D3", "#F38181",
+    "#AA96DA", "#FF9671", "#FFC75F", "#00C9A7", "#B983FF",
+    "#FF6FB5", "#45B7D1", "#FFA07A", "#98D8C8", "#F7B731",
+    "#5F27CD", "#EE5A6F", "#10AC84", "#FF9FF3", "#54A0FF",
+]
+
+def _random_color_for(user_id: str) -> str:
+    h = 0
+    for ch in (user_id or ""):
+        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
+    return SUB_COLOR_PALETTE[h % len(SUB_COLOR_PALETTE)]
+
+
+async def _get_subscriber_tier_info(user_id: str, streamer_id: str) -> Optional[dict]:
+    """Return {tier_id, tier_name, badge_url} if user has an active sub to streamer; else None."""
+    sub = await db.subscriptions.find_one(
+        {"subscriber_id": user_id, "streamer_id": streamer_id, "status": "active",
+         "expires_at": {"$gt": datetime.now(timezone.utc)}},
+        {"_id": 0, "tier_id": 1},
+    )
+    if not sub:
+        return None
+    tier_id = sub.get("tier_id")
+    info = {"tier_id": tier_id, "tier_name": None, "badge_url": None}
+    if not tier_id:
+        return info
+    custom = await db.streamer_tiers.find_one({"tier_id": tier_id, "user_id": streamer_id}, {"_id": 0})
+    if custom:
+        info["tier_name"] = custom.get("name")
+        info["badge_url"] = custom.get("badge_url")
+        return info
+    base = SUBSCRIPTION_TIERS.get(tier_id) if "SUBSCRIPTION_TIERS" in globals() else None
+    if base:
+        info["tier_name"] = base.get("name")
+    return info
+
+
+async def broadcast_donation_alert(stream_id: str, donor_username: str, amount: float, message: str, donor_avatar: Optional[str] = None):
+    payload = {
+        "message_id": f"don_{uuid.uuid4().hex[:12]}",
+        "stream_id": stream_id,
+        "type": "donation_alert",
+        "username": donor_username,
+        "avatar_url": donor_avatar,
+        "amount": float(amount or 0),
+        "content": message or "",
+        "hearts": 0,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        await db.chat_messages.insert_one({**payload})
+        payload.pop("_id", None)
+    except Exception as e:
+        logger.debug(f"donation chat insert failed: {e}")
+    await chat_manager.broadcast(stream_id, payload)
+
+
+async def broadcast_subscription_alert(stream_id: str, subscriber_username: str, tier_name: str, badge_url: Optional[str] = None, subscriber_avatar: Optional[str] = None):
+    payload = {
+        "message_id": f"sub_{uuid.uuid4().hex[:12]}",
+        "stream_id": stream_id,
+        "type": "subscription_alert",
+        "username": subscriber_username,
+        "avatar_url": subscriber_avatar,
+        "tier_name": tier_name or "",
+        "badge_url": badge_url,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        await db.chat_messages.insert_one({**payload})
+        payload.pop("_id", None)
+    except Exception as e:
+        logger.debug(f"subscription chat insert failed: {e}")
+    await chat_manager.broadcast(stream_id, payload)
+
+
 # ============= WEBSOCKET CHAT ENDPOINT =============
 
 @app.websocket("/api/ws/chat/{stream_id}")
@@ -1945,6 +2226,14 @@ async def websocket_chat(websocket: WebSocket, stream_id: str):
                 "type": data.get("type", "message"),
                 "created_at": datetime.now(timezone.utc).isoformat()
             }
+            
+            # Enrich with subscriber tier badge + randomized color for subscribers
+            if user_id and user_id != "anonymous" and streamer_id and user_id != streamer_id:
+                sub_info = await _get_subscriber_tier_info(user_id, streamer_id)
+                if sub_info:
+                    message_doc["subscriber_tier"] = sub_info
+                    # Deterministic but "random" color per (subscriber, streamer)
+                    message_doc["username_color"] = _random_color_for(user_id)
             
             await db.chat_messages.insert_one({**message_doc})
             message_doc.pop("_id", None)
@@ -2088,6 +2377,36 @@ async def get_subscription_status(session_id: str, user: dict = Depends(get_curr
                 "read": False,
                 "created_at": datetime.now(timezone.utc)
             })
+            
+            # Broadcast subscription announcement to the streamer's live chat
+            try:
+                live_stream = await db.streams.find_one(
+                    {"user_id": txn["streamer_id"], "is_live": True},
+                    {"_id": 0, "stream_id": 1},
+                )
+                if live_stream:
+                    subscriber = await db.users.find_one(
+                        {"user_id": txn["subscriber_id"]},
+                        {"_id": 0, "username": 1, "display_name": 1, "avatar_url": 1},
+                    ) or {}
+                    # Resolve tier name + badge (custom tier first, then platform default)
+                    tier_name = SUBSCRIPTION_TIERS.get(txn["tier_id"], {}).get("name", "")
+                    badge_url = None
+                    custom_tier = await db.streamer_tiers.find_one(
+                        {"tier_id": txn["tier_id"], "user_id": txn["streamer_id"]}, {"_id": 0}
+                    )
+                    if custom_tier:
+                        tier_name = custom_tier.get("name") or tier_name
+                        badge_url = custom_tier.get("badge_url")
+                    await broadcast_subscription_alert(
+                        stream_id=live_stream["stream_id"],
+                        subscriber_username=subscriber.get("display_name") or subscriber.get("username") or "New sub",
+                        tier_name=tier_name,
+                        badge_url=badge_url,
+                        subscriber_avatar=subscriber.get("avatar_url"),
+                    )
+            except Exception as e:
+                logger.debug(f"subscription chat broadcast failed: {e}")
     
     return {
         "status": status.status,
@@ -4458,20 +4777,146 @@ async def _send_email(to_email: str, subject: str, body_html: str, body_text: st
 async def send_verification_email(to_email: str, display_name: str, token: str):
     frontend = os.environ.get("FRONTEND_URL") or os.environ.get("REACT_APP_BACKEND_URL", "https://streamvault.app")
     verify_url = f"{frontend.rstrip('/')}/verify-email?token={token}"
-    subject = "Verify your StreamVault email"
-    html = f"""
-    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#111;background:#fff;padding:24px;border-radius:8px;">
-      <h2 style="color:#00B3CC;">Welcome to StreamVault, {display_name}!</h2>
-      <p>Click the button below to verify your email address and activate your account.</p>
-      <p style="margin:24px 0;">
-        <a href="{verify_url}" style="background:#00E5FF;color:#000;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:700;">Verify Email</a>
-      </p>
-      <p style="font-size:12px;color:#666;">Or copy this link: <br>{verify_url}</p>
-      <p style="font-size:12px;color:#666;">If you didn't sign up, ignore this email.</p>
-    </div>
-    """
-    text = f"Welcome to StreamVault! Verify your email: {verify_url}"
+    tpl = await _get_email_template("verification")
+    ctx = {"display_name": display_name, "verify_url": verify_url, "email": to_email}
+    subject = _render_template(tpl["subject"], ctx)
+    html = _render_template(tpl["html"], ctx)
+    text = _render_template(tpl["text"], ctx)
     await _send_email(to_email, subject, html, text)
+
+
+# ============= EMAIL TEMPLATE SYSTEM =============
+
+DEFAULT_EMAIL_TEMPLATES = {
+    "verification": {
+        "subject": "Verify your StreamVault email",
+        "html": """
+<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#111;background:#fff;padding:24px;border-radius:8px;">
+  <h2 style="color:#00B3CC;">Welcome to StreamVault, {display_name}!</h2>
+  <p>Click the button below to verify your email address and activate your account.</p>
+  <p style="margin:24px 0;">
+    <a href="{verify_url}" style="background:#00E5FF;color:#000;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:700;">Verify Email</a>
+  </p>
+  <p style="font-size:12px;color:#666;">Or copy this link:<br>{verify_url}</p>
+  <p style="font-size:12px;color:#666;">If you didn't sign up, ignore this email.</p>
+</div>
+""".strip(),
+        "text": "Welcome to StreamVault! Verify your email: {verify_url}",
+    },
+    "welcome": {
+        "subject": "Welcome to StreamVault, {display_name}!",
+        "html": """
+<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#111;background:#fff;padding:24px;border-radius:8px;">
+  <h2 style="color:#00B3CC;">You're verified, {display_name}!</h2>
+  <p>Your StreamVault account is ready. Jump in and discover live streamers, chat with your favorites, or start your own broadcast.</p>
+  <p style="margin:24px 0;">
+    <a href="{site_url}" style="background:#00E5FF;color:#000;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:700;">Open StreamVault</a>
+  </p>
+  <p style="font-size:12px;color:#666;">Questions? Just reply to this email.</p>
+</div>
+""".strip(),
+        "text": "Welcome to StreamVault, {display_name}! Open StreamVault: {site_url}",
+    },
+    "password_reset": {
+        "subject": "Reset your StreamVault password",
+        "html": """
+<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#111;background:#fff;padding:24px;border-radius:8px;">
+  <h2 style="color:#00B3CC;">Reset your password</h2>
+  <p>Hi {display_name}, we received a request to reset the password for your StreamVault account.</p>
+  <p style="margin:24px 0;">
+    <a href="{reset_url}" style="background:#00E5FF;color:#000;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:700;">Reset Password</a>
+  </p>
+  <p style="font-size:12px;color:#666;">Or copy this link:<br>{reset_url}</p>
+  <p style="font-size:12px;color:#666;">This link expires in 60 minutes. If you didn't request a reset, ignore this email.</p>
+</div>
+""".strip(),
+        "text": "Reset your StreamVault password: {reset_url} (expires in 60 minutes)",
+    },
+}
+
+
+def _render_template(tpl: str, ctx: dict) -> str:
+    out = tpl or ""
+    for k, v in (ctx or {}).items():
+        out = out.replace("{" + k + "}", str(v or ""))
+    return out
+
+
+async def _get_email_template(key: str) -> dict:
+    """Return stored template (subject/html/text) for a given key; fall back to defaults."""
+    defaults = DEFAULT_EMAIL_TEMPLATES.get(key, {"subject": "", "html": "", "text": ""})
+    doc = await db.admin_config.find_one({"type": "email_templates"}, {"_id": 0})
+    templates = (doc or {}).get("templates") or {}
+    stored = templates.get(key) or {}
+    return {
+        "subject": stored.get("subject") or defaults["subject"],
+        "html": stored.get("html") or defaults["html"],
+        "text": stored.get("text") or defaults["text"],
+    }
+
+
+async def send_welcome_email(to_email: str, display_name: str):
+    site = os.environ.get("FRONTEND_URL") or os.environ.get("REACT_APP_BACKEND_URL", "https://streamvault.app")
+    tpl = await _get_email_template("welcome")
+    ctx = {"display_name": display_name or "there", "site_url": site.rstrip('/'), "email": to_email}
+    try:
+        await _send_email(to_email, _render_template(tpl["subject"], ctx),
+                          _render_template(tpl["html"], ctx), _render_template(tpl["text"], ctx))
+    except Exception as e:
+        logger.warning(f"welcome email failed for {to_email}: {e}")
+
+
+async def send_password_reset_email(to_email: str, display_name: str, token: str):
+    frontend = os.environ.get("FRONTEND_URL") or os.environ.get("REACT_APP_BACKEND_URL", "https://streamvault.app")
+    reset_url = f"{frontend.rstrip('/')}/reset-password?token={token}"
+    tpl = await _get_email_template("password_reset")
+    ctx = {"display_name": display_name or "there", "reset_url": reset_url, "email": to_email}
+    await _send_email(to_email, _render_template(tpl["subject"], ctx),
+                      _render_template(tpl["html"], ctx), _render_template(tpl["text"], ctx))
+
+
+@api_router.get("/admin/email-templates")
+async def admin_get_email_templates(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    doc = await db.admin_config.find_one({"type": "email_templates"}, {"_id": 0})
+    stored = (doc or {}).get("templates") or {}
+    out = {}
+    for key, defaults in DEFAULT_EMAIL_TEMPLATES.items():
+        s = stored.get(key) or {}
+        out[key] = {
+            "subject": s.get("subject") or defaults["subject"],
+            "html": s.get("html") or defaults["html"],
+            "text": s.get("text") or defaults["text"],
+        }
+    return {"templates": out, "available_vars": {
+        "verification": ["display_name", "verify_url", "email"],
+        "welcome": ["display_name", "site_url", "email"],
+        "password_reset": ["display_name", "reset_url", "email"],
+    }}
+
+
+@api_router.put("/admin/email-templates")
+async def admin_save_email_templates(request: Request, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    body = await request.json()
+    incoming = body.get("templates") or {}
+    clean = {}
+    for key in DEFAULT_EMAIL_TEMPLATES.keys():
+        t = incoming.get(key) or {}
+        clean[key] = {
+            "subject": str(t.get("subject") or "").strip(),
+            "html": str(t.get("html") or "").strip(),
+            "text": str(t.get("text") or "").strip(),
+        }
+    await db.admin_config.update_one(
+        {"type": "email_templates"},
+        {"$set": {"type": "email_templates", "templates": clean, "updated_at": datetime.now(timezone.utc)}},
+        upsert=True,
+    )
+    return {"message": "Email templates saved"}
+
 
 
 @api_router.get("/admin/smtp-settings")
@@ -4592,6 +5037,9 @@ async def startup():
         logger.info("Object storage initialized")
     except Exception as e:
         logger.error(f"Storage init failed: {e}")
+    # Start background broadcasting sync so viewers see live streams globally
+    asyncio.create_task(broadcasting_sync_loop())
+    logger.info("Broadcasting sync loop scheduled")
 
 @app.on_event("shutdown")
 async def shutdown():

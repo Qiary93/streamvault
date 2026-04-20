@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import AdminMonetization from '../components/AdminMonetization';
 import AdminOtherSettings from '../components/AdminOtherSettings';
 import AdminSmtpSettings from '../components/AdminSmtpSettings';
+import AdminEmailTemplates from '../components/AdminEmailTemplates';
 import { toast } from 'sonner';
 import axios from 'axios';
 
@@ -549,6 +550,9 @@ export default function AdminPage() {
 
       {/* SMTP / Email verification */}
       <AdminSmtpSettings />
+
+      {/* Email templates */}
+      <AdminEmailTemplates />
 
       {/* Monetization */}
       <AdminMonetization />

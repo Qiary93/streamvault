@@ -17,6 +17,7 @@ import ChatSettingsSection from '../components/ChatSettingsSection';
 import PathToPerfectStreamer from '../components/PathToPerfectStreamer';
 import GameNameAutocomplete from '../components/GameNameAutocomplete';
 import LiveTimer from '../components/LiveTimer';
+import DonorsLeaderboard from '../components/DonorsLeaderboard';
 import { toast } from 'sonner';
 import axios from 'axios';
 
@@ -666,7 +667,7 @@ export default function DashboardPage() {
       <StripeConnectSection />
 
       {/* Recent Donations */}
-      <div className="bg-[#0F0F16] border border-white/5 rounded-xl p-6">
+      <div className="bg-[#0F0F16] border border-white/5 rounded-xl p-6" data-testid="recent-donations-section">
         <h2 className="text-lg font-semibold text-white mb-4">Recent Donations</h2>
         
         {donations.length > 0 ? (
@@ -689,6 +690,11 @@ export default function DashboardPage() {
         ) : (
           <p className="text-[#A0A0AB] text-center py-8">No donations yet</p>
         )}
+
+        {/* Top Donors leaderboard — moved here from profile page */}
+        <div className="mt-6 pt-6 border-t border-white/5">
+          <DonorsLeaderboard streamerId={user?.user_id} title="Top Donors" />
+        </div>
       </div>
 
       {/* Path to a perfect streamer */}

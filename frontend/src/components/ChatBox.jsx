@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { PaperPlaneRight } from '@phosphor-icons/react';
+import { PaperPlaneRight, Heart, CurrencyDollar, Star } from '@phosphor-icons/react';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Button } from './ui/button';
 import { ScrollArea } from './ui/scroll-area';
@@ -10,10 +10,10 @@ import axios from 'axios';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
-// Color palette for usernames
-const usernameColors = [
+// Default color palette for non-subscriber usernames (deterministic hash)
+const defaultUsernameColors = [
   '#00E5FF', '#FF6B6B', '#4ECDC4', '#FFE66D', '#95E1D3',
-  '#F38181', '#AA96DA', '#FF9671', '#FFC75F', '#00C9A7'
+  '#F38181', '#AA96DA', '#FF9671', '#FFC75F', '#00C9A7',
 ];
 
 function getUsernameColor(username) {
@@ -21,7 +21,81 @@ function getUsernameColor(username) {
   for (let i = 0; i < (username || '').length; i++) {
     hash = username.charCodeAt(i) + ((hash << 5) - hash);
   }
-  return usernameColors[Math.abs(hash) % usernameColors.length];
+  return defaultUsernameColors[Math.abs(hash) % defaultUsernameColors.length];
+}
+
+function TierBadge({ tier }) {
+  if (!tier) return null;
+  if (tier.badge_url) {
+    return (
+      <img
+        src={tier.badge_url}
+        alt={tier.tier_name || 'Subscriber'}
+        title={tier.tier_name || 'Subscriber'}
+        className="w-4 h-4 rounded-sm inline-block align-middle"
+        data-testid="chat-msg-tier-badge"
+      />
+    );
+  }
+  return (
+    <span
+      title={tier.tier_name || 'Subscriber'}
+      className="inline-flex items-center justify-center w-4 h-4 rounded-sm bg-[#00E5FF]/20 text-[#00E5FF]"
+      data-testid="chat-msg-tier-badge"
+    >
+      <Star weight="fill" className="w-3 h-3" />
+    </span>
+  );
+}
+
+function DonationAlert({ msg, onHeart, hearted }) {
+  return (
+    <div
+      className="rounded-lg border border-[#00E5FF]/30 bg-gradient-to-r from-[#00E5FF]/10 to-[#AA96DA]/10 p-3"
+      data-testid={`chat-donation-alert-${msg.message_id}`}
+    >
+      <div className="flex items-center gap-2 mb-1">
+        <CurrencyDollar weight="fill" className="w-4 h-4 text-[#FFC75F]" />
+        <span className="text-sm font-bold text-[#FFC75F]">
+          {msg.username} donated ${Number(msg.amount || 0).toFixed(2)}
+        </span>
+      </div>
+      {msg.content && (
+        <p className="text-sm text-white/90 break-words mb-2">{msg.content}</p>
+      )}
+      <button
+        type="button"
+        onClick={() => onHeart(msg.message_id)}
+        className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full transition ${
+          hearted ? 'bg-red-500/20 text-red-400' : 'bg-white/5 text-[#A0A0AB] hover:bg-white/10'
+        }`}
+        data-testid={`chat-donation-heart-${msg.message_id}`}
+      >
+        <Heart weight={hearted ? 'fill' : 'regular'} className="w-3.5 h-3.5" />
+        <span>{Number(msg.hearts || 0)}</span>
+      </button>
+    </div>
+  );
+}
+
+function SubscriptionAlert({ msg }) {
+  return (
+    <div
+      className="rounded-lg border border-[#AA96DA]/40 bg-gradient-to-r from-[#AA96DA]/15 to-[#5F27CD]/10 p-3"
+      data-testid={`chat-sub-alert-${msg.message_id}`}
+    >
+      <div className="flex items-center gap-2">
+        {msg.badge_url ? (
+          <img src={msg.badge_url} alt="" className="w-5 h-5 rounded-sm" />
+        ) : (
+          <Star weight="fill" className="w-4 h-4 text-[#AA96DA]" />
+        )}
+        <span className="text-sm font-bold text-[#AA96DA]">
+          {msg.username} just subscribed{msg.tier_name ? ` — ${msg.tier_name}!` : '!'}
+        </span>
+      </div>
+    </div>
+  );
 }
 
 export default function ChatBox({ streamId, streamerId, isSubscribed = false }) {
@@ -29,6 +103,7 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [connected, setConnected] = useState(false);
+  const [heartedIds, setHeartedIds] = useState(() => new Set());
   const scrollRef = useRef(null);
   const wsRef = useRef(null);
   const reconnectTimerRef = useRef(null);
@@ -37,7 +112,6 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
   const [chatSettings, setChatSettings] = useState({ chat_enabled: true, rules: '' });
   const [rulesAccepted, setRulesAccepted] = useState(false);
 
-  // Fetch chat settings for this streamer
   useEffect(() => {
     if (!streamerId) return;
     axios.get(`${API}/api/users/${streamerId}/chat-settings`)
@@ -45,7 +119,6 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
       .catch(() => {});
   }, [streamerId]);
 
-  // Remember rules acceptance per stream
   useEffect(() => {
     if (!streamId) return;
     try {
@@ -59,7 +132,6 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
     try { localStorage.setItem(`sv_chat_rules_${streamId}`, '1'); } catch {}
   };
 
-  // Fetch initial messages via REST
   useEffect(() => {
     const fetchMessages = async () => {
       try {
@@ -72,30 +144,23 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
     fetchMessages();
   }, [streamId]);
 
-  // WebSocket connection
   const connectWs = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
-    
     const wsUrl = API.replace('https://', 'wss://').replace('http://', 'ws://') + `/api/ws/chat/${streamId}`;
     const ws = new WebSocket(wsUrl);
-    
-    ws.onopen = () => {
-      setConnected(true);
-      console.log('Chat WebSocket connected');
-    };
-    
+
+    ws.onopen = () => setConnected(true);
+
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
-        
-        // Handle system messages (bans, timeouts, slow mode)
+
         if (message.type === 'system') {
           setSystemMessage(message.content);
           setTimeout(() => setSystemMessage(''), 5000);
           return;
         }
-        
-        // Real-time chat settings sync
+
         if (message.type === 'chat_settings_updated') {
           setChatSettings(prev => ({
             ...prev,
@@ -104,20 +169,18 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
             followers_only: !!message.followers_only,
             subscribers_only: !!message.subscribers_only,
           }));
-          // If rules changed, reset acceptance so viewers see them again
           if ((message.rules || '') !== chatSettings.rules) {
             try { localStorage.removeItem(`sv_chat_rules_${streamId}`); } catch {}
             setRulesAccepted(false);
           }
           return;
         }
-        
-        // Handle moderation broadcasts
+
         if (message.type === 'moderation') {
           const modMsg = {
             message_id: `mod_${Date.now()}`,
             type: 'moderation',
-            content: message.action === 'ban' 
+            content: message.action === 'ban'
               ? `${message.target_username} was banned by ${message.moderator}`
               : message.action === 'timeout'
               ? `${message.target_username} was timed out for ${message.duration}s by ${message.moderator}`
@@ -126,14 +189,19 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
               : '',
             username: 'System',
             stream_id: streamId,
-            created_at: new Date().toISOString()
+            created_at: new Date().toISOString(),
           };
-          if (modMsg.content) {
-            setMessages(prev => [...prev, modMsg]);
-          }
+          if (modMsg.content) setMessages(prev => [...prev, modMsg]);
           return;
         }
-        
+
+        if (message.type === 'reaction_update') {
+          setMessages(prev => prev.map(m =>
+            m.message_id === message.message_id ? { ...m, hearts: message.hearts } : m
+          ));
+          return;
+        }
+
         setMessages(prev => {
           if (prev.some(m => m.message_id === message.message_id)) return prev;
           return [...prev, message];
@@ -142,17 +210,14 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
         console.error('Error parsing message:', e);
       }
     };
-    
+
     ws.onclose = () => {
       setConnected(false);
-      // Auto-reconnect after 3s
       reconnectTimerRef.current = setTimeout(connectWs, 3000);
     };
-    
-    ws.onerror = () => {
-      ws.close();
-    };
-    
+
+    ws.onerror = () => ws.close();
+
     wsRef.current = ws;
   }, [streamId]);
 
@@ -165,12 +230,9 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
   }, [connectWs]);
 
   useEffect(() => {
-    // Scroll to bottom when new messages arrive
     if (scrollRef.current) {
       const scrollEl = scrollRef.current.querySelector('[data-radix-scroll-area-viewport]');
-      if (scrollEl) {
-        scrollEl.scrollTop = scrollEl.scrollHeight;
-      }
+      if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
     }
   }, [messages]);
 
@@ -181,7 +243,6 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
     const content = newMessage.trim();
     setNewMessage('');
 
-    // Send via WebSocket if connected
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
         user_id: user.user_id,
@@ -189,10 +250,9 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
         display_name: user.display_name,
         avatar_url: user.avatar_url,
         content: content,
-        type: 'message'
+        type: 'message',
       }));
     } else {
-      // Fallback to REST API
       try {
         const response = await axios.post(
           `${API}/api/streams/${streamId}/chat`,
@@ -206,9 +266,26 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
     }
   };
 
+  const handleHeart = async (messageId) => {
+    if (!user) return;
+    try {
+      const res = await axios.post(`${API}/api/streams/${streamId}/chat/${messageId}/heart`, {}, { withCredentials: true });
+      setHeartedIds(prev => {
+        const next = new Set(prev);
+        if (res.data.hearted) next.add(messageId); else next.delete(messageId);
+        return next;
+      });
+      // Optimistic count update (WS reaction_update will reconcile)
+      setMessages(prev => prev.map(m =>
+        m.message_id === messageId ? { ...m, hearts: res.data.hearts } : m
+      ));
+    } catch (e) {
+      console.error('heart failed', e);
+    }
+  };
+
   return (
     <div className="h-full flex flex-col bg-[#0F0F16] border-l border-white/5 relative" data-testid="chat-box">
-      {/* Chat disabled overlay */}
       {!chatSettings.chat_enabled && (
         <div className="absolute inset-0 z-20 bg-[#0F0F16]/95 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center" data-testid="chat-disabled-overlay">
           <div className="w-14 h-14 rounded-full bg-[#1A1A24] flex items-center justify-center mb-3">
@@ -219,7 +296,6 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
         </div>
       )}
 
-      {/* Rules gate overlay */}
       {chatSettings.chat_enabled && chatSettings.rules && !rulesAccepted && (
         <div className="absolute inset-0 z-20 bg-[#0F0F16]/95 backdrop-blur-sm flex flex-col p-4" data-testid="chat-rules-overlay">
           <div className="flex items-center gap-2 mb-3">
@@ -239,7 +315,6 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
         </div>
       )}
 
-      {/* Header */}
       <div className="h-12 flex items-center justify-between px-4 border-b border-white/5">
         <div className="flex items-center gap-2">
           <h3 className="font-semibold text-white">Stream Chat</h3>
@@ -251,48 +326,65 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
         </div>
       </div>
 
-      {/* System message */}
       {systemMessage && (
         <div className="px-4 py-2 bg-red-500/10 border-b border-red-500/20 text-red-400 text-xs text-center">
           {systemMessage}
         </div>
       )}
 
-      {/* Messages */}
       <ScrollArea className="flex-1 p-4" ref={scrollRef}>
         <div className="space-y-3">
-          {messages.map((msg) => (
-            <div key={msg.message_id} className={`flex gap-2 chat-message-enter group ${msg.type === 'moderation' ? 'justify-center' : ''}`} data-testid={`chat-msg-${msg.message_id}`}>
-              {msg.type === 'moderation' ? (
-                <span className="text-xs text-yellow-400 italic bg-yellow-500/10 px-3 py-1 rounded-full">
-                  {msg.content}
-                </span>
-              ) : (
-                <>
-                  <Avatar className="w-6 h-6 flex-shrink-0">
-                    <AvatarImage src={msg.avatar_url} alt={msg.username} />
-                    <AvatarFallback className="bg-[#292938] text-[#00E5FF] text-xs">
-                      {(msg.display_name || msg.username)?.charAt(0).toUpperCase()}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1">
-                      <span 
-                        className="text-sm font-semibold mr-1"
-                        style={{ color: getUsernameColor(msg.username) }}
-                      >
-                        {msg.display_name || msg.username}
-                      </span>
-                      {msg.user_id && msg.user_id !== user?.user_id && (
-                        <ModControls streamId={streamId} targetUserId={msg.user_id} targetUsername={msg.username} />
-                      )}
-                    </div>
-                    <span className="text-sm text-[#A0A0AB] break-words">{msg.content}</span>
+          {messages.map((msg) => {
+            if (msg.type === 'donation_alert') {
+              return (
+                <div key={msg.message_id} className="chat-message-enter" data-testid={`chat-msg-${msg.message_id}`}>
+                  <DonationAlert msg={msg} onHeart={handleHeart} hearted={heartedIds.has(msg.message_id)} />
+                </div>
+              );
+            }
+            if (msg.type === 'subscription_alert') {
+              return (
+                <div key={msg.message_id} className="chat-message-enter" data-testid={`chat-msg-${msg.message_id}`}>
+                  <SubscriptionAlert msg={msg} />
+                </div>
+              );
+            }
+            if (msg.type === 'moderation') {
+              return (
+                <div key={msg.message_id} className="flex gap-2 justify-center chat-message-enter" data-testid={`chat-msg-${msg.message_id}`}>
+                  <span className="text-xs text-yellow-400 italic bg-yellow-500/10 px-3 py-1 rounded-full">
+                    {msg.content}
+                  </span>
+                </div>
+              );
+            }
+            const color = msg.username_color || getUsernameColor(msg.username);
+            return (
+              <div key={msg.message_id} className="flex gap-2 chat-message-enter group" data-testid={`chat-msg-${msg.message_id}`}>
+                <Avatar className="w-6 h-6 flex-shrink-0">
+                  <AvatarImage src={msg.avatar_url} alt={msg.username} />
+                  <AvatarFallback className="bg-[#292938] text-[#00E5FF] text-xs">
+                    {(msg.display_name || msg.username)?.charAt(0).toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {msg.subscriber_tier && <TierBadge tier={msg.subscriber_tier} />}
+                    <span
+                      className="text-sm font-semibold mr-1"
+                      style={{ color }}
+                    >
+                      {msg.display_name || msg.username}
+                    </span>
+                    {msg.user_id && msg.user_id !== user?.user_id && (
+                      <ModControls streamId={streamId} targetUserId={msg.user_id} targetUsername={msg.username} />
+                    )}
                   </div>
-                </>
-              )}
-            </div>
-          ))}
+                  <span className="text-sm text-[#A0A0AB] break-words">{msg.content}</span>
+                </div>
+              </div>
+            );
+          })}
           {messages.length === 0 && (
             <p className="text-center text-[#A0A0AB] text-sm py-8">
               No messages yet. Be the first to chat!
@@ -301,7 +393,6 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
         </div>
       </ScrollArea>
 
-      {/* Input */}
       <div className="p-3 border-t border-white/5">
         {user ? (
           <form onSubmit={handleSendMessage} className="flex items-center gap-1.5">
@@ -319,8 +410,8 @@ export default function ChatBox({ streamId, streamerId, isSubscribed = false }) 
               className="flex-1 h-10 px-3 bg-[#1A1A24] border border-white/10 rounded-lg text-white placeholder-[#A0A0AB] focus:outline-none focus:border-[#00E5FF] transition-colors text-sm"
               data-testid="chat-input"
             />
-            <Button 
-              type="submit" 
+            <Button
+              type="submit"
               disabled={!newMessage.trim()}
               className="bg-[#00E5FF] text-black hover:bg-[#00B3CC] disabled:opacity-50"
               data-testid="chat-submit-button"

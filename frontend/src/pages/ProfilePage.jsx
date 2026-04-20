@@ -8,7 +8,7 @@ import StreamCard from '../components/StreamCard';
 import AchievementsSection from '../components/AchievementsSection';
 import VerifiedBadge from '../components/VerifiedBadge';
 import ProfileFeed from '../components/ProfileFeed';
-import DonorsLeaderboard from '../components/DonorsLeaderboard';
+// DonorsLeaderboard moved to DashboardPage under Recent Donations
 import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'sonner';
 import axios from 'axios';
@@ -320,14 +320,11 @@ export default function ProfilePage() {
           </TabsContent>
         </Tabs>
 
-        {/* Achievements + Feed + Leaderboard */}
+        {/* Achievements + Feed */}
         <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="lg:col-span-2 space-y-4">
             <AchievementsSection userId={profile.user_id} />
             <ProfileFeed userId={profile.user_id} isOwnProfile={isOwnProfile} />
-          </div>
-          <div>
-            <DonorsLeaderboard streamerId={profile.user_id} title={`Top Donors for ${profile.display_name || profile.username}`} />
           </div>
         </div>
       </div>

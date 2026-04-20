@@ -21,6 +21,8 @@ import AdminPage from './pages/AdminPage';
 import TagDiscoveryPage from './pages/TagDiscoveryPage';
 import GameDiscoveryPage from './pages/GameDiscoveryPage';
 import VerifyEmailPage from './pages/VerifyEmailPage';
+import ForgotPasswordPage from './pages/ForgotPasswordPage';
+import ResetPasswordPage from './pages/ResetPasswordPage';
 
 // Layout
 import Layout from './components/Layout';
@@ -60,6 +62,8 @@ function AppRouter() {
       <Route path="/auth" element={<AuthPage />} />
       <Route path="/auth/callback" element={<AuthCallback />} />
       <Route path="/verify-email" element={<VerifyEmailPage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       
       <Route element={<Layout />}>
         <Route path="/" element={<HomePage />} />
