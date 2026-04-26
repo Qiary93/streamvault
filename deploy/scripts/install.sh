@@ -56,6 +56,56 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+# 2b. Docker registry connectivity check.
+# -----------------------------------------------------------------------------
+# Many VPS providers (Contabo, OVH, sometimes Hetzner) advertise IPv6 but the
+# route to Cloudflare's R2 CDN — which Docker Hub uses for blob storage — is
+# broken or extremely slow. The result is that `docker pull mongo:7` (or any
+# other image) hangs and fails with "i/o timeout" on an IPv6 address.
+#
+# We probe IPv6 reachability to the Docker registry. If it doesn't work AND
+# the host has no /etc/docker/daemon.json yet, we write a safe IPv4-only
+# defaults file so the image pull succeeds.
+configure_docker_daemon() {
+    local daemon_file=/etc/docker/daemon.json
+    
+    # If the file exists and the operator already configured "ipv6", respect it.
+    if [[ -f "$daemon_file" ]] && grep -q '"ipv6"' "$daemon_file" 2>/dev/null; then
+        log "Existing /etc/docker/daemon.json — leaving as-is."
+        return
+    fi
+    
+    log "Probing IPv6 connectivity to Docker registry…"
+    local probe_url="https://registry-1.docker.io/v2/"
+    local code=""
+    code=$(timeout 6 curl -6 -fsSL --max-time 5 -o /dev/null -w "%{http_code}" "$probe_url" 2>/dev/null || echo "000")
+    
+    # 200 or 401 (anonymous) means the registry is reachable; anything else is bad.
+    if [[ "$code" == "200" || "$code" == "401" ]]; then
+        log "IPv6 to Docker registry works (HTTP $code) — keeping defaults."
+        return
+    fi
+    
+    warn "IPv6 to Docker registry unreachable (probe returned '$code')."
+    warn "Writing IPv4-only Docker daemon defaults to avoid pull timeouts."
+    mkdir -p /etc/docker
+    cat > "$daemon_file" <<'JSON'
+{
+  "ipv6": false,
+  "dns": ["1.1.1.1", "8.8.8.8"]
+}
+JSON
+    systemctl restart docker
+    # Wait for the daemon to come back
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        if docker info >/dev/null 2>&1; then break; fi
+        sleep 1
+    done
+    log "Docker daemon restarted with IPv4-only registry config."
+}
+configure_docker_daemon
+
+# -----------------------------------------------------------------------------
 # 3. Load config from .env
 # -----------------------------------------------------------------------------
 [[ -f "$ENV_FILE" ]] || die "Missing $ENV_FILE — copy deploy/.env.example to deploy/.env and fill in DOMAIN + LETSENCRYPT_EMAIL + JWT_SECRET."
