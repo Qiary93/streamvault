@@ -18,7 +18,9 @@ PROJECT_ROOT="$(cd "$DEPLOY_DIR/.." && pwd)"
 ENV_FILE="$DEPLOY_DIR/.env"
 COMPOSE_FILE="$DEPLOY_DIR/docker-compose.yml"
 
+C_YEL='\033[1;33m'; C_RESET='\033[0m'
 log()  { printf '\033[1;36m[install]\033[0m %s\n' "$*"; }
+ok()   { printf '\033[1;32m[ok]\033[0m %s\n'      "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n'   "$*" >&2; }
 die()  { printf '\033[1;31m[error]\033[0m %s\n'  "$*" >&2; exit 1; }
 
@@ -137,9 +139,7 @@ fi
 
 # -----------------------------------------------------------------------------
 # 3b. MongoDB credentials — auto-generate if missing (upgrade path for installs
-#     created before the auth-enabled compose file). If the user already has a
-#     running stack with an unauthenticated mongo volume, flipping auth on
-#     requires the volume to be re-initialized, so we warn loudly.
+#     created before the auth-enabled compose file).
 # -----------------------------------------------------------------------------
 if [[ -z "${MONGO_ROOT_USER:-}" ]]; then
     MONGO_ROOT_USER="svadmin"
@@ -148,25 +148,89 @@ if [[ -z "${MONGO_ROOT_USER:-}" ]]; then
 fi
 if [[ -z "${MONGO_ROOT_PASSWORD:-}" || "$MONGO_ROOT_PASSWORD" == CHANGE_ME* ]]; then
     MONGO_ROOT_PASSWORD="$(openssl rand -hex 32)"
-    # strip any existing placeholder line then append
     sed -i '/^MONGO_ROOT_PASSWORD=/d' "$ENV_FILE"
     echo "MONGO_ROOT_PASSWORD=$MONGO_ROOT_PASSWORD" >> "$ENV_FILE"
     log "Generated a new MONGO_ROOT_PASSWORD (written to $ENV_FILE)."
+fi
+
+# -----------------------------------------------------------------------------
+# 3c. Detect MongoDB auth-mismatch from older installs.
+# -----------------------------------------------------------------------------
+# Background: MongoDB only reads MONGO_INITDB_ROOT_USERNAME/PASSWORD when the
+# data volume is initialized for the FIRST time. If a user upgraded from an
+# older docker-compose.yml that didn't enable auth, their existing volume has
+# no auth set up — but the new docker-compose tells the backend to authenticate,
+# so the backend can never connect.
+#
+# We detect this BEFORE building/starting the new stack and recover automatically.
+mongo_auth_health_check() {
+    # Returns 0 if mongo is reachable AND auth works (or auth is not yet
+    # configured), 1 if there's a mismatch we should recover from.
+    local container=sv-mongo
+    if ! docker ps --format '{{.Names}}' | grep -q "^${container}$"; then
+        return 0  # not running yet — nothing to check
+    fi
     
-    # Detect a pre-existing no-auth mongo volume left over from an older install.
-    if docker volume inspect streamvault_mongo-data >/dev/null 2>&1; then
-        warn "An existing MongoDB volume was detected. MongoDB only applies the"
-        warn "root password on FIRST initialization, so an existing no-auth"
-        warn "volume will NOT pick up the new credentials and the backend will"
-        warn "fail to connect. To migrate, either:"
-        warn "  • Back up & wipe the volume (destroys data):"
-        warn "      sudo bash $DEPLOY_DIR/scripts/backup-mongo.sh"
-        warn "      docker compose -f $COMPOSE_FILE down"
-        warn "      docker volume rm streamvault_mongo-data streamvault_mongo-config"
-        warn "  • OR keep no-auth: set MONGO_ROOT_PASSWORD=\"\" in $ENV_FILE and"
-        warn "    revert docker-compose.yml to not enable auth (not recommended)."
-        read -r -p "Continue anyway? [y/N] " yn
-        [[ "$yn" == [yY]* ]] || die "Aborted by operator."
+    # Try with creds (new auth-enabled install)
+    if docker exec "$container" mongosh --quiet \
+            -u "$MONGO_ROOT_USER" -p "$MONGO_ROOT_PASSWORD" \
+            --authenticationDatabase admin \
+            --eval "db.adminCommand('ping').ok" 2>/dev/null | grep -q "^1$"; then
+        return 0
+    fi
+    
+    # Try without creds (old no-auth install)
+    if docker exec "$container" mongosh --quiet \
+            --eval "db.adminCommand('ping').ok" 2>/dev/null | grep -q "^1$"; then
+        # Reachable WITHOUT auth → volume is no-auth → mismatch with new compose
+        return 1
+    fi
+    
+    # Mongo is up but neither path worked — could be transient
+    return 2
+}
+
+if docker volume inspect streamvault_mongo-data >/dev/null 2>&1; then
+    # Volume exists from a prior install. Spin mongo up in isolation to test it.
+    log "Detected existing MongoDB volume — verifying auth compatibility…"
+    docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d mongo >/dev/null 2>&1 || true
+    sleep 5
+    
+    set +e
+    mongo_auth_health_check
+    auth_status=$?
+    set -e
+    
+    if [[ $auth_status -eq 1 ]]; then
+        warn "Existing MongoDB volume has NO authentication, but the current"
+        warn "deployment requires it. The backend cannot connect to this volume."
+        warn ""
+        warn "Recovery requires re-initializing the volume. Your data will be"
+        warn "backed up first — find it at $DEPLOY_DIR/backups/<timestamp>/"
+        warn ""
+        printf "${C_YEL}?${C_RESET} Auto-recover (backup → wipe → reinit with auth)? [Y/n] "
+        # Read from /dev/tty so this works inside curl-piped bootstrap too.
+        ans="y"
+        if [[ -t 0 ]] || [[ -e /dev/tty ]]; then
+            read -r ans </dev/tty || ans="y"
+        fi
+        ans="${ans:-y}"
+        if [[ "$ans" != [yY]* ]]; then
+            die "Aborted by operator. To recover manually: backup-mongo.sh, then 'docker compose down && docker volume rm streamvault_mongo-data streamvault_mongo-config'."
+        fi
+        
+        log "Backing up existing MongoDB volume…"
+        bash "$DEPLOY_DIR/scripts/backup-mongo.sh" || warn "Backup failed — continuing anyway."
+        
+        log "Stopping stack and removing un-authenticated volume…"
+        docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down >/dev/null 2>&1 || true
+        docker volume rm streamvault_mongo-data streamvault_mongo-config >/dev/null 2>&1 || true
+        ok "Old volume removed — fresh init with auth will happen on next 'up'."
+    elif [[ $auth_status -eq 2 ]]; then
+        warn "MongoDB is up but neither authenticated nor anonymous ping worked."
+        warn "Will continue; if the backend fails to start, re-run install.sh to retry."
+    else
+        log "MongoDB auth check passed."
     fi
 fi
 
@@ -238,6 +302,47 @@ docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build
 
 log "Starting services…"
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
+
+# -----------------------------------------------------------------------------
+# 7b. Post-startup health check.
+# -----------------------------------------------------------------------------
+# Verify the backend container is actually running (not crash-looping). This
+# catches:
+#   • aiosmtplib / missing-python-dep issues
+#   • MongoDB auth mismatches that snuck past the earlier check
+#   • Any other container that died on startup
+log "Waiting up to 90s for backend to become healthy…"
+backend_ready=false
+for i in $(seq 1 18); do
+    sleep 5
+    state=$(docker inspect -f '{{.State.Status}}' sv-backend 2>/dev/null || echo "missing")
+    restarts=$(docker inspect -f '{{.RestartCount}}' sv-backend 2>/dev/null || echo "0")
+    if [[ "$state" == "running" && "$restarts" -lt 3 ]]; then
+        # Also probe the API to confirm it's actually serving requests
+        if docker exec sv-backend curl -fsS --max-time 3 http://127.0.0.1:8001/api/config/features >/dev/null 2>&1; then
+            backend_ready=true
+            break
+        fi
+    fi
+done
+
+if ! $backend_ready; then
+    state=$(docker inspect -f '{{.State.Status}}' sv-backend 2>/dev/null || echo "missing")
+    restarts=$(docker inspect -f '{{.RestartCount}}' sv-backend 2>/dev/null || echo "0")
+    warn "Backend container did not become healthy. Status='$state' restarts=$restarts"
+    warn "Last 40 log lines from sv-backend:"
+    echo "----------------------------------------------------------------------"
+    docker logs sv-backend --tail 40 2>&1 || true
+    echo "----------------------------------------------------------------------"
+    warn "Common causes & fixes:"
+    warn "  • ModuleNotFoundError → 'cd $PROJECT_ROOT && git pull' for fixes,"
+    warn "    then 'docker compose -f $COMPOSE_FILE build --no-cache backend &&"
+    warn "    docker compose -f $COMPOSE_FILE up -d backend'"
+    warn "  • MongoServerSelectionError / Authentication failed → re-run install.sh"
+    warn "    (it auto-detects auth mismatches and offers to recover the volume)"
+    die "Aborting before installing systemd unit. Fix backend, then re-run."
+fi
+ok "Backend is healthy and responding on /api."
 
 # -----------------------------------------------------------------------------
 # 8. Install systemd unit so the stack survives reboots
