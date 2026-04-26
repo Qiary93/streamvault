@@ -69,24 +69,35 @@ fi
 configure_docker_daemon() {
     local daemon_file=/etc/docker/daemon.json
     
-    # If the file exists and the operator already configured "ipv6", respect it.
+    # If the operator already configured "ipv6", respect their choice.
     if [[ -f "$daemon_file" ]] && grep -q '"ipv6"' "$daemon_file" 2>/dev/null; then
         log "Existing /etc/docker/daemon.json — leaving as-is."
         return
     fi
     
-    log "Probing IPv6 connectivity to Docker registry…"
-    local probe_url="https://registry-1.docker.io/v2/"
+    log "Probing Docker registry + R2 storage over IPv6…"
+    # Two different hosts:
+    #   • registry-1.docker.io       — Docker Hub registry API
+    #   • r2.cloudflarestorage.com   — actual image-blob storage (where pulls
+    #                                  hang on broken-IPv6 VPSes like yours)
+    # Both must work for `docker pull` to succeed. We treat HTTP 200/401/403
+    # as "reachable" — anything else (timeout, RST, NXDOMAIN) is broken.
+    local probe_ok=true
     local code=""
-    code=$(timeout 6 curl -6 -fsSL --max-time 5 -o /dev/null -w "%{http_code}" "$probe_url" 2>/dev/null || echo "000")
+    for host in registry-1.docker.io r2.cloudflarestorage.com; do
+        code=$(timeout 6 curl -6 -sS --max-time 5 -o /dev/null -w "%{http_code}" "https://$host/" 2>/dev/null || echo "000")
+        if [[ "$code" != "200" && "$code" != "401" && "$code" != "403" && "$code" != "400" ]]; then
+            warn "IPv6 probe to $host returned '$code' — IPv6 routing is broken."
+            probe_ok=false
+            break
+        fi
+    done
     
-    # 200 or 401 (anonymous) means the registry is reachable; anything else is bad.
-    if [[ "$code" == "200" || "$code" == "401" ]]; then
-        log "IPv6 to Docker registry works (HTTP $code) — keeping defaults."
+    if $probe_ok; then
+        log "IPv6 to Docker registry + R2 storage works — keeping defaults."
         return
     fi
     
-    warn "IPv6 to Docker registry unreachable (probe returned '$code')."
     warn "Writing IPv4-only Docker daemon defaults to avoid pull timeouts."
     mkdir -p /etc/docker
     cat > "$daemon_file" <<'JSON'
@@ -96,7 +107,6 @@ configure_docker_daemon() {
 }
 JSON
     systemctl restart docker
-    # Wait for the daemon to come back
     for i in 1 2 3 4 5 6 7 8 9 10; do
         if docker info >/dev/null 2>&1; then break; fi
         sleep 1
