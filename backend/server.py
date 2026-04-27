@@ -5448,94 +5448,22 @@ async def admin_unpin_stream(stream_id: str, user: dict = Depends(get_current_us
 
 
 # ============= ADMIN — UPDATES =============
-import update_manager  # noqa: E402  (imported here so the module is optional)
+# Routes extracted to /app/backend/routes/admin_updates.py.
+# `_send_email` is wired in lazily (it is defined later in this file).
+import update_manager  # noqa: E402,F401
+from routes.admin_updates import build_router as _build_admin_updates_router  # noqa: E402
+
+api_router.include_router(
+    _build_admin_updates_router(
+        db=db,
+        get_current_user=get_current_user,
+        send_email=lambda *a, **kw: _send_email(*a, **kw),
+        logger=logger,
+    )
+)
 
 
-_LAST_NOTIFIED_JOB: Dict[str, Optional[str]] = {"started_at": None}
 
-
-async def _maybe_notify_update_outcome(status_payload: dict):
-    """If the latest job just transitioned to success/error and we haven't sent
-    a notification email for it yet, send one to the configured ADMIN_EMAIL."""
-    if not isinstance(status_payload, dict):
-        return
-    s = status_payload.get("status")
-    started = status_payload.get("started_at")
-    if s not in ("success", "error") or not started:
-        return
-    if _LAST_NOTIFIED_JOB.get("started_at") == started:
-        return  # already notified for this job
-    
-    smtp_cfg = await db.admin_config.find_one({"type": "smtp"}, {"_id": 0})
-    if not (smtp_cfg and smtp_cfg.get("enabled")):
-        _LAST_NOTIFIED_JOB["started_at"] = started
-        return
-    
-    admin_email = os.environ.get("ADMIN_EMAIL", "")
-    if not admin_email:
-        return
-    
-    site = os.environ.get("FRONTEND_URL") or os.environ.get("REACT_APP_BACKEND_URL", "")
-    icon = "✅" if s == "success" else "⚠️"
-    subject = f"{icon} StreamVault update {s}"
-    body_html = f"""
-<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#111;background:#fff;padding:24px;border-radius:8px;">
-  <h2 style="color:{'#10AC84' if s == 'success' else '#EE5A6F'};">{icon} Update {s}</h2>
-  <p><strong>Stage:</strong> {status_payload.get('stage', '—')}</p>
-  <p><strong>Message:</strong> {status_payload.get('message', '—')}</p>
-  <p><strong>Started:</strong> {status_payload.get('started_at', '—')}<br/>
-     <strong>Finished:</strong> {status_payload.get('finished_at', '—')}</p>
-  <pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:11px;white-space:pre-wrap;">{(status_payload.get('log_tail') or '')[-2000:]}</pre>
-  <p style="margin-top:16px;"><a href="{site}/admin" style="background:#00E5FF;color:#000;padding:10px 16px;border-radius:6px;text-decoration:none;font-weight:700;">Open admin</a></p>
-</div>
-""".strip()
-    body_text = f"Update {s}. Stage: {status_payload.get('stage', '—')}. {status_payload.get('message', '')}"
-    try:
-        await _send_email(admin_email, subject, body_html, body_text)
-        _LAST_NOTIFIED_JOB["started_at"] = started
-        logger.info(f"Sent update-outcome email to {admin_email} for job {started}")
-    except Exception as e:
-        logger.error(f"Failed to send update notification: {e}")
-
-
-@api_router.get("/admin/updates/check")
-async def admin_check_updates(user: dict = Depends(get_current_user)):
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return await asyncio.get_event_loop().run_in_executor(None, update_manager.check_for_updates)
-
-
-@api_router.post("/admin/updates/apply")
-async def admin_apply_update(user: dict = Depends(get_current_user)):
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return await asyncio.get_event_loop().run_in_executor(None, update_manager.request_update)
-
-
-@api_router.post("/admin/updates/rollback")
-async def admin_rollback_update(request: Request, user: dict = Depends(get_current_user)):
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    body = await request.json()
-    target_sha = str(body.get("target_sha", "")).strip()
-    return await asyncio.get_event_loop().run_in_executor(None, update_manager.request_rollback, target_sha)
-
-
-@api_router.get("/admin/updates/status")
-async def admin_update_status(user: dict = Depends(get_current_user)):
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    payload = await asyncio.get_event_loop().run_in_executor(None, update_manager.get_status)
-    # Best-effort email-on-completion (fire and forget)
-    asyncio.create_task(_maybe_notify_update_outcome(payload))
-    return payload
-
-
-@api_router.get("/admin/updates/history")
-async def admin_update_history(user: dict = Depends(get_current_user)):
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return await asyncio.get_event_loop().run_in_executor(None, update_manager.get_history)
 
 
 

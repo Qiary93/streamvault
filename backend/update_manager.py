@@ -129,7 +129,9 @@ def _enqueue_request(payload: dict) -> dict:
                                        "message": "Waiting for host updater…",
                                        "started_at": now, "mode": payload.get("mode", "update")}, indent=2))
     REQUEST_FILE.write_text(now)
-    return {"ok": True, "message": "Update queued — host watcher fires within ~2s.", "requested_at": now}
+    mode = payload.get("mode", "update")
+    msg = "Rollback queued — host watcher fires within ~2s." if mode == "rollback" else "Update queued — host watcher fires within ~2s."
+    return {"ok": True, "message": msg, "requested_at": now}
 
 
 def request_update() -> dict:

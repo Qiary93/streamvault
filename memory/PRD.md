@@ -10,6 +10,20 @@ Build a Kick.com-style livestream platform: real-time video (LiveKit/WebRTC), We
 
 ## What's Implemented
 
+### Feb 2026 — Auto-Updater UI completion + routes/ refactor scaffold
+- **Admin Auto-Updater UI** (P0 from previous session): `AdminUpdatesPanel.jsx` now renders the full feature set the user requested:
+  - "You're up to date" green block with the verified full SHA when `behind === 0` (`data-testid=updates-up-to-date`).
+  - Parsed CHANGELOG snippet card (`data-testid=updates-changelog`) — pulled from `/api/admin/updates/check` `.changelog` field.
+  - "Recent updates" history list (`data-testid=updates-history`) populated from `/api/admin/updates/history` with per-row Rollback buttons (`data-testid=updates-rollback-btn-<sha>`).
+  - Rollback flow calls `POST /api/admin/updates/rollback` with the selected `previous_sha` and surfaces a `Rollback queued — host watcher fires within ~2s.` toast (mode-aware message added in `update_manager._enqueue_request`).
+  - Auto-refreshes history + check after a queued job finishes.
+  - Confirm dialog explains the destructive nature of rollback (DB restored from backup taken before that update).
+  - Backend & frontend verified end-to-end by testing_agent_v3_fork iteration_11 (13/13 backend, all frontend checkpoints).
+- **Backend `routes/` package scaffolded** for the long-running goal of splitting the ~6k-line `server.py`:
+  - `/app/backend/routes/__init__.py`, `/app/backend/routes/README.md` document the factory-based migration pattern (no circular imports).
+  - `/app/backend/routes/admin_updates.py` is the first migrated module — owns all 5 `/admin/updates/*` endpoints + the `_maybe_notify_update_outcome` SMTP hook. `server.py` now mounts it via `api_router.include_router(...)`.
+  - `server.py` shrunk from 5,906 → 5,834 lines as a result. Migration roadmap (auth, streams, chat, donations, raids, admin_*, payouts) tracked in `routes/README.md`.
+
 ### Feb 2026 — Raid, Sort, Auto-payouts, Achievement email, Rate-limit hardening, RichTextEditor fix
 - **Bug fix — RichTextEditor typing backward**: removed `dangerouslySetInnerHTML` (which reset caret to pos 0 on every keystroke). Content is now synced imperatively via a `useEffect` guarded by `isInternalUpdateRef` so user typing isn't overwritten.
 - **Stream sorting**: `GET /api/streams?sort=viewers|newest|oldest`. Browse page exposes 3 sort pills.
@@ -60,7 +74,7 @@ See `/app/memory/test_credentials.md`
 ## Roadmap
 
 ### P1 (backlog)
-- Split `server.py` (~5300 lines) into routers (auth, streams, chat, donations, subscriptions, raids, admin, email, payouts).
+- Continue the `server.py` router-split refactor (admin_updates.py is the POC; see `/app/backend/routes/README.md` for the next-up list — auth, categories, follows, raids, donations, subscriptions, chat, streams, admin_*, payouts).
 - Persist `_RESET_PWD_IP_HITS` in Redis/Mongo for multi-worker deployments.
 - Raid staleness re-check before broadcasting to target.
 
@@ -75,5 +89,5 @@ See `/app/memory/test_credentials.md`
 ## Project Health
 - Broken: None
 - Mocked: None (real LiveKit + Stripe + S3 + MongoDB + aiosmtplib)
-- Backend tests: 25/25 passed (iteration 10)
-- Frontend: 14/14 UI checks passed (iteration 10)
+- Backend tests: 13/13 passed (iteration 11, admin auto-updater suite); 25/25 passed (iteration 10, full regression)
+- Frontend: Updates panel verified end-to-end (iteration 11); 14/14 UI checks passed (iteration 10)
