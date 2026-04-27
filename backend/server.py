@@ -284,6 +284,97 @@ def hash_password(password: str) -> str:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
 
+
+
+# ============= BAN ENFORCEMENT =============
+
+def _client_ip_from_request(request: Request) -> str:
+    if request is None: return ""
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request and request.client else ""
+
+
+def _format_ban_msg(ban: dict) -> str:
+    if ban.get("expires_at"):
+        ex = ban["expires_at"]
+        if isinstance(ex, datetime):
+            if ex.tzinfo is None: ex = ex.replace(tzinfo=timezone.utc)
+            return f"Account banned until {ex.isoformat()}: {ban.get('reason') or 'no reason provided'}"
+    return f"Account permanently banned: {ban.get('reason') or 'no reason provided'}"
+
+
+async def _check_user_banned(user: dict, request: Request = None) -> Optional[str]:
+    """Return human-readable ban message if the user OR their IP is banned, else None.
+    Auto-lifts expired bans on the fly."""
+    now = datetime.now(timezone.utc)
+    
+    # 1) Account-level flag (set when admin creates a ban targeting this user)
+    if user and user.get("is_banned"):
+        ex = user.get("ban_expires_at")
+        if isinstance(ex, str):
+            try: ex = datetime.fromisoformat(ex.replace("Z", "+00:00"))
+            except: ex = None
+        if ex and ex.tzinfo is None: ex = ex.replace(tzinfo=timezone.utc)
+        if ex and ex <= now:
+            await db.users.update_one(
+                {"user_id": user["user_id"]},
+                {"$unset": {"is_banned": "", "ban_reason": "", "ban_expires_at": "", "ban_id": ""}},
+            )
+            await db.user_bans.update_many({"user_id": user["user_id"], "active": True, "expires_at": {"$lte": now}}, {"$set": {"active": False}})
+        else:
+            return f"Account banned: {user.get('ban_reason') or 'no reason provided'}"
+    
+    # 2) Active ban records targeting this user via email/username/user_id
+    if user:
+        active = await db.user_bans.find_one({
+            "active": True,
+            "$or": [{"user_id": user.get("user_id")}, {"email": user.get("email")}, {"username": user.get("username")}],
+            "$and": [{"$or": [{"expires_at": None}, {"expires_at": {"$gt": now}}]}],
+        }, {"_id": 0})
+        if active:
+            return _format_ban_msg(active)
+    
+    # 3) IP-based ban
+    ip = _client_ip_from_request(request) if request else ""
+    if ip:
+        ip_ban = await db.user_bans.find_one({
+            "active": True, "ip": ip,
+            "$or": [{"expires_at": None}, {"expires_at": {"$gt": now}}],
+        }, {"_id": 0})
+        if ip_ban:
+            return _format_ban_msg(ip_ban)
+    
+    return None
+
+
+async def _check_stream_restricted(user: dict) -> Optional[str]:
+    """Return human-readable message if the user can't stream, else None.
+    Auto-lifts expired restrictions."""
+    if not user or not user.get("stream_restricted"):
+        return None
+    now = datetime.now(timezone.utc)
+    ex = user.get("stream_restriction_expires_at")
+    if isinstance(ex, str):
+        try: ex = datetime.fromisoformat(ex.replace("Z", "+00:00"))
+        except: ex = None
+    if ex and ex.tzinfo is None: ex = ex.replace(tzinfo=timezone.utc)
+    if ex and ex <= now:
+        await db.users.update_one(
+            {"user_id": user["user_id"]},
+            {"$unset": {
+                "stream_restricted": "", "stream_restriction_reason": "",
+                "stream_restriction_expires_at": "", "stream_restriction_set_by": "",
+                "stream_restriction_set_at": "",
+            }},
+        )
+        return None
+    if ex:
+        return f"You are restricted from streaming until {ex.isoformat()}: {user.get('stream_restriction_reason') or 'no reason provided'}"
+    return f"You are permanently restricted from streaming: {user.get('stream_restriction_reason') or 'no reason provided'}"
+
+
 # ============= JWT HELPERS =============
 
 def create_access_token(user_id: str, email: str) -> str:
@@ -420,6 +511,11 @@ async def login(credentials: UserLogin, request: Request):
     # Block login if email not verified (only when SMTP is enabled)
     if user.get("email_verified") is False:
         raise HTTPException(status_code=403, detail="Please verify your email address before logging in. Check your inbox for the verification link.")
+    
+    # Block login if user is banned (account or IP). Bans expire automatically.
+    ban_msg = await _check_user_banned(user, request)
+    if ban_msg:
+        raise HTTPException(status_code=403, detail=ban_msg)
     
     access_token = create_access_token(user["user_id"], email)
     refresh_token = create_refresh_token(user["user_id"])
@@ -917,7 +1013,11 @@ async def get_streams(category_id: Optional[str] = None, limit: int = 20, offset
         "oldest": ("started_at", 1),
     }.get(sort, ("viewer_count", -1))
     
-    streams = await db.streams.find(query, {"_id": 0, "whip_token": 0}).sort(sort_key, sort_dir).skip(offset).limit(limit).to_list(limit)
+    streams = await db.streams.find(query, {"_id": 0, "whip_token": 0}).sort([
+        ("pinned", -1),               # pinned streams first (bool desc → True=1 above False=0)
+        ("pin_priority", -1),         # newest pin first within pinned group
+        (sort_key, sort_dir),         # then user-selected sort
+    ]).skip(offset).limit(limit).to_list(limit)
     
     for stream in streams:
         user = await db.users.find_one({"user_id": stream["user_id"]}, {"_id": 0, "username": 1, "display_name": 1, "avatar_url": 1})
@@ -964,6 +1064,11 @@ async def get_stream(stream_id: str, request: Request):
 
 @api_router.post("/streams")
 async def create_stream(stream_data: StreamCreate, user: dict = Depends(get_current_user)):
+    # Block restricted streamers
+    block = await _check_stream_restricted(user)
+    if block:
+        raise HTTPException(status_code=403, detail=block)
+    
     existing = await db.streams.find_one({"user_id": user["user_id"], "is_live": True})
     if existing:
         raise HTTPException(status_code=400, detail="Already have an active stream")
@@ -5069,6 +5174,278 @@ async def public_feature_flags():
         "achievements_enabled": cfg.get("achievements_enabled", True),
         "path_enabled": cfg.get("path_enabled", True),
     }
+
+
+# ============= BRANDING (public) =============
+
+@api_router.get("/config/branding")
+async def public_branding():
+    """Public — site name + tagline for HTML title and SEO."""
+    cfg = await db.admin_config.find_one({"type": "branding"}, {"_id": 0}) or {}
+    return {
+        "site_name": cfg.get("site_name") or "StreamVault",
+        "tagline": cfg.get("tagline") or "Live streaming for everyone",
+        "description": cfg.get("description") or "StreamVault — live streaming platform",
+    }
+
+
+@api_router.get("/admin/branding")
+async def admin_get_branding(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    cfg = await db.admin_config.find_one({"type": "branding"}, {"_id": 0}) or {}
+    return {
+        "site_name": cfg.get("site_name") or "StreamVault",
+        "tagline": cfg.get("tagline") or "Live streaming for everyone",
+        "description": cfg.get("description") or "StreamVault — live streaming platform",
+    }
+
+
+@api_router.put("/admin/branding")
+async def admin_save_branding(request: Request, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    body = await request.json()
+    site_name = str(body.get("site_name", "")).strip()[:80]
+    tagline = str(body.get("tagline", "")).strip()[:160]
+    description = str(body.get("description", "")).strip()[:300]
+    if not site_name:
+        raise HTTPException(status_code=400, detail="site_name is required")
+    await db.admin_config.update_one(
+        {"type": "branding"},
+        {"$set": {
+            "type": "branding",
+            "site_name": site_name,
+            "tagline": tagline or "Live streaming for everyone",
+            "description": description or site_name,
+            "updated_at": datetime.now(timezone.utc),
+        }},
+        upsert=True,
+    )
+    return {"message": "Branding saved", "site_name": site_name, "tagline": tagline, "description": description}
+
+
+# ============= ADMIN — USER BANS =============
+
+def _parse_duration_seconds(value) -> Optional[int]:
+    """Accept None/0 -> permanent, positive int -> seconds."""
+    if value is None or value == "":
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0, n) or None
+
+
+@api_router.post("/admin/bans")
+async def admin_create_ban(request: Request, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    body = await request.json()
+    target_email = (body.get("email") or "").lower().strip()
+    target_username = (body.get("username") or "").lower().strip()
+    target_user_id = (body.get("user_id") or "").strip()
+    target_ip = (body.get("ip") or "").strip()
+    reason = str(body.get("reason") or "")[:500]
+    duration_seconds = _parse_duration_seconds(body.get("duration_seconds"))
+    
+    target_user = None
+    query = []
+    if target_user_id: query.append({"user_id": target_user_id})
+    if target_email:   query.append({"email": target_email})
+    if target_username: query.append({"username": target_username})
+    if query:
+        target_user = await db.users.find_one({"$or": query}, {"_id": 0})
+    
+    if not target_user and not target_ip:
+        raise HTTPException(status_code=400, detail="Provide user_id/email/username and/or ip")
+    
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=duration_seconds) if duration_seconds else None
+    ban_id = f"ban_{uuid.uuid4().hex[:12]}"
+    doc = {
+        "ban_id": ban_id,
+        "user_id": (target_user or {}).get("user_id"),
+        "email": (target_user or {}).get("email") or target_email or None,
+        "username": (target_user or {}).get("username") or target_username or None,
+        "ip": target_ip or None,
+        "reason": reason,
+        "duration_seconds": duration_seconds,
+        "expires_at": expires_at,
+        "permanent": expires_at is None,
+        "active": True,
+        "created_by": user["user_id"],
+        "created_at": now,
+    }
+    await db.user_bans.insert_one({**doc})
+    doc.pop("_id", None)
+    
+    if target_user:
+        await db.users.update_one(
+            {"user_id": target_user["user_id"]},
+            {"$set": {
+                "is_banned": True,
+                "ban_reason": reason,
+                "ban_expires_at": expires_at,
+                "ban_id": ban_id,
+            }},
+        )
+    if isinstance(doc.get("expires_at"), datetime):
+        doc["expires_at"] = doc["expires_at"].isoformat()
+    if isinstance(doc.get("created_at"), datetime):
+        doc["created_at"] = doc["created_at"].isoformat()
+    return doc
+
+
+@api_router.get("/admin/bans")
+async def admin_list_bans(user: dict = Depends(get_current_user), only_active: bool = True):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    q = {}
+    if only_active:
+        q = {"active": True, "$or": [{"expires_at": None}, {"expires_at": {"$gt": datetime.now(timezone.utc)}}]}
+    items = await db.user_bans.find(q, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
+    for it in items:
+        for k in ("expires_at", "created_at"):
+            if isinstance(it.get(k), datetime):
+                it[k] = it[k].isoformat()
+    return items
+
+
+@api_router.delete("/admin/bans/{ban_id}")
+async def admin_unban(ban_id: str, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    ban = await db.user_bans.find_one({"ban_id": ban_id}, {"_id": 0})
+    if not ban:
+        raise HTTPException(status_code=404, detail="Ban not found")
+    await db.user_bans.update_one({"ban_id": ban_id}, {"$set": {"active": False, "lifted_at": datetime.now(timezone.utc), "lifted_by": user["user_id"]}})
+    if ban.get("user_id"):
+        await db.users.update_one(
+            {"user_id": ban["user_id"]},
+            {"$unset": {"is_banned": "", "ban_reason": "", "ban_expires_at": "", "ban_id": ""}},
+        )
+    return {"message": "Ban lifted", "ban_id": ban_id}
+
+
+# ============= ADMIN — STREAMER RESTRICTIONS =============
+
+@api_router.post("/admin/streamer-restrictions")
+async def admin_restrict_streamer(request: Request, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    body = await request.json()
+    target_email = (body.get("email") or "").lower().strip()
+    target_username = (body.get("username") or "").lower().strip()
+    target_user_id = (body.get("user_id") or "").strip()
+    reason = str(body.get("reason") or "")[:500]
+    duration_seconds = _parse_duration_seconds(body.get("duration_seconds"))
+    
+    query = []
+    if target_user_id: query.append({"user_id": target_user_id})
+    if target_email:   query.append({"email": target_email})
+    if target_username: query.append({"username": target_username})
+    if not query:
+        raise HTTPException(status_code=400, detail="Provide user_id/email/username")
+    target = await db.users.find_one({"$or": query}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=duration_seconds) if duration_seconds else None
+    
+    await db.users.update_one(
+        {"user_id": target["user_id"]},
+        {"$set": {
+            "stream_restricted": True,
+            "stream_restriction_reason": reason,
+            "stream_restriction_expires_at": expires_at,
+            "stream_restriction_set_by": user["user_id"],
+            "stream_restriction_set_at": now,
+        }},
+    )
+    await db.streams.update_many(
+        {"user_id": target["user_id"], "is_live": True},
+        {"$set": {"is_live": False, "broadcasting": False, "broadcasting_ended_at": now}},
+    )
+    return {
+        "message": "Streamer restricted",
+        "user_id": target["user_id"],
+        "username": target.get("username"),
+        "expires_at": expires_at.isoformat() if expires_at else None,
+        "permanent": expires_at is None,
+    }
+
+
+@api_router.delete("/admin/streamer-restrictions/{user_id}")
+async def admin_lift_streamer_restriction(user_id: str, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    res = await db.users.update_one(
+        {"user_id": user_id},
+        {"$unset": {
+            "stream_restricted": "",
+            "stream_restriction_reason": "",
+            "stream_restriction_expires_at": "",
+            "stream_restriction_set_by": "",
+            "stream_restriction_set_at": "",
+        }},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"message": "Restriction lifted", "user_id": user_id}
+
+
+@api_router.get("/admin/streamer-restrictions")
+async def admin_list_streamer_restrictions(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    items = await db.users.find(
+        {"stream_restricted": True},
+        {"_id": 0, "user_id": 1, "username": 1, "email": 1, "display_name": 1,
+         "stream_restriction_reason": 1, "stream_restriction_expires_at": 1, "stream_restriction_set_at": 1},
+    ).to_list(500)
+    for it in items:
+        for k in ("stream_restriction_expires_at", "stream_restriction_set_at"):
+            if isinstance(it.get(k), datetime):
+                it[k] = it[k].isoformat()
+    return items
+
+
+# ============= ADMIN — PIN STREAM TO TOP =============
+
+@api_router.post("/admin/streams/{stream_id}/pin")
+async def admin_pin_stream(stream_id: str, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    stream = await db.streams.find_one({"stream_id": stream_id}, {"_id": 0})
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    last = await db.streams.find_one(
+        {"pinned": True}, {"_id": 0, "pin_priority": 1}, sort=[("pin_priority", -1)]
+    )
+    next_priority = int((last or {}).get("pin_priority", 0) or 0) + 1
+    await db.streams.update_one(
+        {"stream_id": stream_id},
+        {"$set": {"pinned": True, "pin_priority": next_priority, "pinned_by": user["user_id"], "pinned_at": datetime.now(timezone.utc)}},
+    )
+    return {"message": "Stream pinned", "stream_id": stream_id, "pin_priority": next_priority}
+
+
+@api_router.delete("/admin/streams/{stream_id}/pin")
+async def admin_unpin_stream(stream_id: str, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    res = await db.streams.update_one(
+        {"stream_id": stream_id},
+        {"$unset": {"pinned": "", "pin_priority": "", "pinned_by": "", "pinned_at": ""}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    return {"message": "Stream unpinned", "stream_id": stream_id}
+
+
 
 
 # ============= STREAMER AD OPT-OUT =============

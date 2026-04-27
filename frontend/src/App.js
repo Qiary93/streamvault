@@ -23,6 +23,7 @@ import GameDiscoveryPage from './pages/GameDiscoveryPage';
 import VerifyEmailPage from './pages/VerifyEmailPage';
 import ForgotPasswordPage from './pages/ForgotPasswordPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
+import BrandingTitle from './components/BrandingTitle';
 
 // Layout
 import Layout from './components/Layout';
@@ -100,6 +101,7 @@ function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
+        <BrandingTitle />
         <AppRouter />
         <LevelUpListener />
         <Toaster position="top-right" />
