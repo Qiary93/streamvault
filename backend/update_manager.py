@@ -86,6 +86,7 @@ def check_for_updates() -> dict:
         return {
             "supported": True, "current_sha": current_sha, "current_short": current_short,
             "latest_sha": "", "behind": 0, "fetched": fetched, "branch": branch,
+            "changelog": _read_changelog_snippet(),
             "message": f"Could not resolve {upstream_ref}: {latest_sha}",
         }
     
