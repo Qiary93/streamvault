@@ -10,6 +10,11 @@ Build a Kick.com-style livestream platform: real-time video (LiveKit/WebRTC), We
 
 ## What's Implemented
 
+### Feb 2026 — Rate-limit persistence + Raid staleness re-check
+- **`_RESET_PWD_IP_HITS` migrated to MongoDB** (`db.rate_limit_hits`) for multi-worker safety. Sliding-window count + a TTL index on `expires_at` (auto-cleanup), so the 5-attempts-per-15-min limit is now consistent across all uvicorn workers / pod restarts. The helper is now async and fails open on a Mongo blip (never blocks legit users).
+- **Raid staleness re-check**: `POST /api/streams/{id}/raid` re-verifies the target is still `is_live && broadcasting` immediately before inserting the raid doc + broadcasting. Returns `409 Conflict` with a friendly message when the target went offline between the initial lookup and the broadcast (instead of the old behavior of redirecting hundreds of viewers to a dead stream).
+- Pytest coverage in `/app/backend/tests/test_rate_limit_and_raid.py` (4/5 passing — 5th is an env-dependent skip).
+
 ### Feb 2026 — Auto-Updater UI completion + routes/ refactor scaffold
 - **Admin Auto-Updater UI** (P0 from previous session): `AdminUpdatesPanel.jsx` now renders the full feature set the user requested:
   - "You're up to date" green block with the verified full SHA when `behind === 0` (`data-testid=updates-up-to-date`).
@@ -75,8 +80,6 @@ See `/app/memory/test_credentials.md`
 
 ### P1 (backlog)
 - Continue the `server.py` router-split refactor (admin_updates.py is the POC; see `/app/backend/routes/README.md` for the next-up list — auth, categories, follows, raids, donations, subscriptions, chat, streams, admin_*, payouts).
-- Persist `_RESET_PWD_IP_HITS` in Redis/Mongo for multi-worker deployments.
-- Raid staleness re-check before broadcasting to target.
 
 ### P2 (skipped per user)
 - True last-30s MP4 clips via LiveKit Egress.

@@ -663,8 +663,11 @@ async def forgot_password(request: Request):
     return {"message": "If an account with that email exists, a reset link has been sent."}
 
 
-# Simple in-memory sliding-window IP rate limiter for reset-password (process-local).
-_RESET_PWD_IP_HITS: Dict[str, List[datetime]] = {}
+# IP-based sliding-window rate limiter for /auth/reset-password.
+# Backed by Mongo collection `rate_limit_hits` with a TTL index for automatic
+# cleanup, so the limit is consistent across multiple uvicorn workers and
+# survives restarts. (See _ensure_indexes for the TTL definition.)
+_RESET_PWD_RL_KEY_PREFIX = "reset_pwd:"
 
 
 def _client_ip(request: Request) -> str:
@@ -675,21 +678,35 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def _check_reset_pwd_ip_rate_limit(ip: str, max_hits: int = 5, window_seconds: int = 900):
-    """Raise 429 if the same IP attempted > max_hits resets within window_seconds."""
+async def _check_reset_pwd_ip_rate_limit(ip: str, max_hits: int = 5, window_seconds: int = 900):
+    """Raise 429 if the same IP attempted > max_hits resets within window_seconds.
+    Uses a Mongo-backed sliding window (multi-worker safe)."""
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=window_seconds)
-    hits = [t for t in _RESET_PWD_IP_HITS.get(ip, []) if t >= cutoff]
-    if len(hits) >= max_hits:
+    key = f"{_RESET_PWD_RL_KEY_PREFIX}{ip}"
+    try:
+        recent = await db.rate_limit_hits.count_documents({"key": key, "ts": {"$gte": cutoff}})
+    except Exception as e:
+        # Fail open — never block legitimate users on a Mongo blip.
+        logger.warning(f"rate_limit_hits count failed: {e}")
+        recent = 0
+    if recent >= max_hits:
         raise HTTPException(status_code=429, detail="Too many reset attempts from this IP. Try again later.")
-    hits.append(now)
-    _RESET_PWD_IP_HITS[ip] = hits
+    try:
+        await db.rate_limit_hits.insert_one({
+            "key": key,
+            "ts": now,
+            # `expires_at` drives the TTL index — Mongo deletes the doc once this passes.
+            "expires_at": now + timedelta(seconds=window_seconds),
+        })
+    except Exception as e:
+        logger.warning(f"rate_limit_hits insert failed: {e}")
 
 
 @api_router.post("/auth/reset-password")
 async def reset_password(request: Request):
     # IP-level throttle — slows brute forcing of random tokens
-    _check_reset_pwd_ip_rate_limit(_client_ip(request))
+    await _check_reset_pwd_ip_rate_limit(_client_ip(request))
     
     body = await request.json()
     token = str(body.get("token", "")).strip()
@@ -1524,6 +1541,20 @@ async def start_raid(stream_id: str, request: Request, user: dict = Depends(get_
     raider_viewer_count = int(stream.get("viewer_count", 0) or 0)
     raid_id = f"raid_{uuid.uuid4().hex[:10]}"
     now = datetime.now(timezone.utc)
+
+    # Re-check target staleness right before we commit & broadcast — guards against
+    # the target going offline between the initial lookup and the broadcast.
+    target_stream_fresh = await db.streams.find_one(
+        {"stream_id": target_stream["stream_id"], "is_live": True, "broadcasting": True},
+        {"_id": 0, "stream_id": 1, "title": 1, "viewer_count": 1},
+    )
+    if not target_stream_fresh:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{target_user['username']} just went offline — raid cancelled. Try another streamer.",
+        )
+    target_stream = target_stream_fresh
+
     raid_doc = {
         "raid_id": raid_id,
         "source_user_id": user["user_id"],
@@ -2275,6 +2306,9 @@ async def seed_data():
     await db.chat_timeouts.create_index([("stream_id", 1), ("user_id", 1)])
     await db.chat_timeouts.create_index("expires_at", expireAfterSeconds=0)
     await db.chat_mods.create_index([("stream_id", 1), ("user_id", 1)])
+    # TTL: rate-limit hits auto-expire once expires_at passes (multi-worker safe)
+    await db.rate_limit_hits.create_index("expires_at", expireAfterSeconds=0)
+    await db.rate_limit_hits.create_index([("key", 1), ("ts", 1)])
     
     logger.info("Indexes created")
 
