@@ -11,6 +11,7 @@ import AdminSmtpSettings from '../components/AdminSmtpSettings';
 import AdminEmailTemplates from '../components/AdminEmailTemplates';
 import AdminAutoPayoutSweep from '../components/AdminAutoPayoutSweep';
 import AdminWebsiteAdmin from '../components/AdminWebsiteAdmin';
+import AdminUpdatesPanel from '../components/AdminUpdatesPanel';
 import { toast } from 'sonner';
 import axios from 'axios';
 
@@ -567,6 +568,9 @@ export default function AdminPage() {
 
       {/* Website Administration */}
       <AdminWebsiteAdmin />
+
+      {/* Updates */}
+      <AdminUpdatesPanel />
     </div>
   );
 }

@@ -5447,6 +5447,32 @@ async def admin_unpin_stream(stream_id: str, user: dict = Depends(get_current_us
 
 
 
+# ============= ADMIN — UPDATES =============
+import update_manager  # noqa: E402  (imported here so the module is optional)
+
+
+@api_router.get("/admin/updates/check")
+async def admin_check_updates(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return await asyncio.get_event_loop().run_in_executor(None, update_manager.check_for_updates)
+
+
+@api_router.post("/admin/updates/apply")
+async def admin_apply_update(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return await asyncio.get_event_loop().run_in_executor(None, update_manager.request_update)
+
+
+@api_router.get("/admin/updates/status")
+async def admin_update_status(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return await asyncio.get_event_loop().run_in_executor(None, update_manager.get_status)
+
+
+
 
 # ============= STREAMER AD OPT-OUT =============
 

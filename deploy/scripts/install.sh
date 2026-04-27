@@ -374,6 +374,58 @@ systemctl daemon-reload
 systemctl enable streamvault.service
 
 # -----------------------------------------------------------------------------
+# 8b. Install the auto-updater (path watcher + oneshot service).
+# -----------------------------------------------------------------------------
+# Backend container drops a marker file at $PROJECT_ROOT/.update-state/requested
+# when an admin clicks "Update" in the panel. systemd's path-watcher picks it
+# up and runs deploy/scripts/updater.sh as root on the host (where it has the
+# privileges to git-pull, build, and recreate containers).
+log "Installing auto-updater systemd units…"
+
+UPDATE_STATE_DIR="$PROJECT_ROOT/.update-state"
+mkdir -p "$UPDATE_STATE_DIR"
+# Make the dir writable by anyone (the backend container runs as root inside
+# its namespace, so it can already write here, but explicit perms protect us
+# if the user later decides to run the backend as a non-root UID).
+chmod 0777 "$UPDATE_STATE_DIR"
+
+UPDATER_SERVICE=/etc/systemd/system/streamvault-updater.service
+cat > "$UPDATER_SERVICE" <<EOF
+[Unit]
+Description=StreamVault — apply update from GitHub
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=$PROJECT_ROOT
+Environment=PROJECT_DIR=$PROJECT_ROOT
+ExecStart=/usr/bin/env bash $DEPLOY_DIR/scripts/updater.sh
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+UPDATER_PATH=/etc/systemd/system/streamvault-updater.path
+cat > "$UPDATER_PATH" <<EOF
+[Unit]
+Description=Watch for StreamVault update requests
+After=streamvault.service
+
+[Path]
+PathExists=$UPDATE_STATE_DIR/requested
+Unit=streamvault-updater.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now streamvault-updater.path
+ok "Auto-updater installed (path-watcher → oneshot service)."
+
+# -----------------------------------------------------------------------------
 # 9. Post-install summary
 # -----------------------------------------------------------------------------
 cat <<EOF

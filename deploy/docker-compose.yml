@@ -60,6 +60,11 @@ services:
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
       LIVEKIT_URL: ${LIVEKIT_URL:-}
+      HOST_REPO_PATH: /host/repo
+    volumes:
+      # RW mount so the backend can run `git fetch` and signal update jobs to
+      # the host-side systemd path watcher (.update-state/requested file).
+      - ${PROJECT_DIR:-/opt/streamvault}:/host/repo
     networks:
       - sv-net
 
