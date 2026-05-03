@@ -431,8 +431,6 @@ export default function AdminPage() {
                 </SelectTrigger>
                 <SelectContent className="bg-[#0F0F16] border-white/10">
                   <SelectItem value="wasabi" className="text-white">Wasabi</SelectItem>
-                  <SelectItem value="aws" className="text-white">AWS S3</SelectItem>
-                  <SelectItem value="other" className="text-white">Other S3-compatible</SelectItem>
                 </SelectContent>
               </Select>
             </div>

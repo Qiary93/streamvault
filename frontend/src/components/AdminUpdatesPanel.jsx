@@ -148,7 +148,7 @@ export default function AdminUpdatesPanel() {
             Updates
           </h3>
           <p className="text-sm text-[#A0A0AB] mt-1">
-            One-click rebuild &amp; deploy from your GitHub repository. Pre-update DB backups + rollback included.
+            Automatic Updates only available for urgent situations. Pre-update DB backups + rollback included.
           </p>
         </div>
         <Button
