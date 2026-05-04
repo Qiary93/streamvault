@@ -3,11 +3,105 @@ import axios from 'axios';
 import { toast } from 'sonner';
 import {
   ArrowsClockwise, Download, GitBranch, CheckCircle, Warning, Spinner,
-  Code, ClockCounterClockwise, Notebook,
+  Code, ClockCounterClockwise, Notebook, Heart,
 } from '@phosphor-icons/react';
 import { Button } from './ui/button';
 
 const API = process.env.REACT_APP_BACKEND_URL;
+
+const PAYPAL_EMAIL = 'stancu.daniel1993@gmail.com';
+
+function DonateSection() {
+  const [amount, setAmount] = useState('10');
+
+  const donate = (e) => {
+    e.preventDefault();
+    const n = parseFloat(amount);
+    if (!n || n <= 0) {
+      toast.error('Please enter a valid amount');
+      return;
+    }
+    // PayPal donation URL — opens PayPal checkout with the email + amount
+    // pre-filled. Donor can still change currency / amount on the PayPal page.
+    const params = new URLSearchParams({
+      business: PAYPAL_EMAIL,
+      cmd: '_donations',
+      currency_code: 'USD',
+      item_name: 'StreamVault project support',
+      amount: n.toFixed(2),
+    });
+    const url = `https://www.paypal.com/cgi-bin/webscr?${params.toString()}`;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
+  const preset = (v) => setAmount(String(v));
+
+  return (
+    <div
+      className="bg-[#1A1A24] rounded-lg p-4 mt-3 border border-[#00E5FF]/10"
+      data-testid="admin-updates-donate"
+    >
+      <div className="flex items-center gap-2 mb-3">
+        <Heart weight="fill" className="w-4 h-4 text-[#EE5A6F]" />
+        <h4 className="text-sm font-semibold text-white">Support the project</h4>
+      </div>
+
+      <form onSubmit={donate} className="flex flex-wrap items-center gap-2 mb-3">
+        <div className="flex items-center gap-1">
+          {[5, 10, 25, 50, 100].map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => preset(v)}
+              className={`h-8 px-2.5 rounded text-xs font-semibold transition-colors border ${
+                Number(amount) === v
+                  ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
+                  : 'bg-transparent text-white border-white/10 hover:bg-white/5'
+              }`}
+              data-testid={`donate-preset-${v}`}
+            >
+              ${v}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex items-center gap-1">
+          <span className="text-[#A0A0AB] text-sm pl-1">$</span>
+          <input
+            type="number"
+            min="1"
+            step="0.01"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            className="h-8 w-24 bg-[#0F0F16] border border-white/10 rounded px-2 text-white text-sm focus:border-[#00E5FF] focus:outline-none"
+            placeholder="Amount"
+            data-testid="donate-amount-input"
+          />
+        </div>
+
+        <Button
+          type="submit"
+          className="bg-[#0070BA] hover:bg-[#005EA6] text-white font-bold h-8"
+          data-testid="donate-paypal-btn"
+        >
+          <Heart weight="fill" className="w-3.5 h-3.5 mr-1.5" />
+          Donate with PayPal
+        </Button>
+      </form>
+
+      <p className="text-xs text-[#A0A0AB] leading-relaxed" data-testid="donate-message">
+        This is a free project made by <span className="text-white font-semibold">Qiary93</span>. Please Donate for the project to evolve further. If you have any ideas how this project can be improved, please send an email to:{' '}
+        <a
+          href={`mailto:${PAYPAL_EMAIL}`}
+          className="text-[#00E5FF] hover:underline font-mono"
+        >
+          {PAYPAL_EMAIL}
+        </a>{' '}
+        with your ideas.
+      </p>
+    </div>
+  );
+}
 
 const STATUS_LABELS = {
   idle:        { color: 'text-[#A0A0AB]', icon: GitBranch,    label: 'Idle' },
@@ -131,6 +225,7 @@ export default function AdminUpdatesPanel() {
           on your VPS.
         </p>
         <p className="text-xs text-[#A0A0AB] mt-2">{check.message}</p>
+        <DonateSection />
       </div>
     );
   }
@@ -148,7 +243,7 @@ export default function AdminUpdatesPanel() {
             Updates
           </h3>
           <p className="text-sm text-[#A0A0AB] mt-1">
-            Automatic Updates only available for urgent situations. Pre-update DB backups + rollback included.
+            Automatic Updates, please make a backup of everything before proceeding. Pre-update DB backups + rollback included.
           </p>
         </div>
         <Button
@@ -328,6 +423,8 @@ export default function AdminUpdatesPanel() {
           </p>
         </div>
       )}
+
+      <DonateSection />
     </div>
   );
 }
