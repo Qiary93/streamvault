@@ -8,7 +8,7 @@ from typing import Optional
 
 import bcrypt
 import jwt
-from fastapi import Cookie, HTTPException, status
+from fastapi import Cookie, Depends, HTTPException, status
 
 from config import (
     ACCESS_TOKEN_TTL_MINUTES,
@@ -81,6 +81,14 @@ async def get_current_user(access_token: Optional[str] = Cookie(default=None)) -
     user = await db.users.find_one({"user_id": payload["sub"]}, {"_id": 0, "password_hash": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+
+async def get_admin_user(access_token: Optional[str] = Cookie(default=None)) -> dict:
+    """FastAPI dependency — like get_current_user, but rejects non-admins with 403."""
+    user = await get_current_user(access_token)
+    if not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
     return user
 
 

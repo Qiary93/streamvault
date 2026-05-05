@@ -22,6 +22,8 @@ export default function Header() {
             { to: "/", label: "Home" },
             { to: "/pricing", label: "Pricing" },
             user && { to: "/dashboard", label: "Dashboard" },
+            user && { to: "/affiliate", label: "Affiliate" },
+            user?.is_admin && { to: "/admin", label: "Admin" },
           ]
             .filter(Boolean)
             .map((l) => (

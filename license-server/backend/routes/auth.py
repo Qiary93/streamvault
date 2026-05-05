@@ -67,6 +67,8 @@ async def register(body: RegisterRequest):
         "full_name": body.full_name,
         "password_hash": hash_password(body.password),
         "stripe_customer_id": None,
+        "is_admin": False,
+        "referred_by": (body.referral_code or "").strip().upper() or None,
         "created_at": datetime.now(timezone.utc),
     }
     await db.users.insert_one(user)
@@ -129,5 +131,6 @@ async def me(user: dict = Depends(get_current_user)):
         user_id=user["user_id"],
         email=user["email"],
         full_name=user.get("full_name"),
+        is_admin=bool(user.get("is_admin")),
         created_at=user["created_at"],
     )

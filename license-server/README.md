@@ -15,17 +15,50 @@ account. The product (StreamVault) pings this server every 24 hours to validate.
 Open that file and you can edit:
 
 - ✅ **Stripe keys** — `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` (loaded from `.env`)
-- ✅ **Domain** — `LICENSE_SERVER_DOMAIN` (default `license.stream-vault.eu`)
-- ✅ **All prices** — `PRODUCTS` dict (Basic / Pro / Enterprise)
+- ✅ **Domain** — `LICENSE_SERVER_DOMAIN` (default `https://license.stream-vault.eu`)
+- ✅ **All prices** — `PRODUCTS` dict (Basic / Pro monthly / Pro annual / Enterprise monthly / Enterprise annual)
 - ✅ **IP-change limit** — `IP_CHANGE_LIMIT_PER_MONTH` (default 3)
 - ✅ **License key prefix** — `LICENSE_KEY_PREFIX` (default `DSB-`)
 - ✅ **JWT lifetime** — `ACCESS_TOKEN_TTL_MINUTES`, `REFRESH_TOKEN_TTL_DAYS`
-- ✅ **Admin email for revenue alerts** — `ADMIN_NOTIFY_EMAIL`
+- ✅ **Admin email** — `ADMIN_NOTIFY_EMAIL` in `.env` — auto-promotes that user to admin on startup, and receives sale notifications
+- ✅ **Affiliate commission** — `AFFILIATE_DEFAULT_COMMISSION_PERCENT` (default 20%)
+- ✅ **Affiliate cookie window** — `AFFILIATE_COOKIE_DAYS` (default 30)
+- ✅ **Coupon max-discount cap** — `COUPON_MAX_DISCOUNT_PERCENT` (default 90)
+- ✅ **Expiry warning days** — `EXPIRY_WARNING_DAYS` (default `[7, 2]`)
 - ✅ **CORS origins** — for the marketing/customer site
-- ✅ **Trial period** (if you ever want to add one) — `TRIAL_DAYS`
 
 Edit, save, restart the backend. No database migration needed — prices update on
 the fly because we use Stripe's `price_data` (dynamic prices), not Stripe Price IDs.
+
+---
+
+## 🎯 Feature overview (post-MVP)
+
+### For customers
+- Email/password registration, JWT cookie auth
+- Browse pricing with **monthly ↔ annual toggle** (annual = 2 months free)
+- Apply **coupon codes** at checkout (validated live, applied at Stripe)
+- Stripe Checkout (one-time + subscription, dynamic pricing)
+- Self-service dashboard: copy license key, change bound IP, see renewal date
+- Email notifications on purchase, expiry warnings (7d + 2d before), revocation
+
+### For affiliates
+- One-click signup at `/affiliate` — pick a referral code
+- Auto-tracked attribution (30-day cookie on `?ref=CODE` URLs)
+- Self-service dashboard: total sales, earned commission, paid-out, balance owed
+- Recent-sales table with masked buyer emails
+
+### For you (the seller)
+- Auto-promoted to admin via `ADMIN_NOTIFY_EMAIL` env var
+- `/admin` dashboard with 5 tabs:
+  - **Overview** — MRR, ARR, total revenue, 30d revenue, license counts
+  - **Users** — search by email/name, see license count + lifetime spend per user
+  - **Licenses** — filter by status, revoke (sends email), refund (Stripe API), filter
+  - **Coupons** — full CRUD (percentage or fixed amount, max-uses, expiry, product-scoped)
+  - **Affiliates** — list, see balance owed, mark commissions paid after wiring
+- Admin endpoint to **manually issue a license** (customer support, beta comp)
+- Stripe **refund flow** built into the admin (`POST /admin/licenses/{id}/refund`)
+- Sale notification emails to your inbox (with coupon/affiliate attribution)
 
 ---
 
@@ -231,13 +264,15 @@ the backend URL.
 
 ## 🚦 Roadmap (post-MVP)
 
-- [ ] Email notifications on license issued / expired / IP changed
-- [ ] Admin panel for you (refunds, license revocation, customer support)
-- [ ] Coupon codes (`?coupon=BLACKFRIDAY30`)
-- [ ] Affiliate program with referral tracking
-- [ ] Annual subscription tier with 2-month discount
+- [x] Email notifications on license issued / expired / IP changed
+- [x] Admin panel for you (refunds, license revocation, customer support, manual issue)
+- [x] Coupon codes
+- [x] Affiliate program with referral tracking
+- [x] Annual subscription tier with 2-month discount
 - [ ] Self-service refund request (within 14 days)
 - [ ] Webhooks out (Discord/Slack on every sale)
+- [ ] Stripe Customer Portal link from /dashboard
+- [ ] Multi-currency support
 
 ---
 

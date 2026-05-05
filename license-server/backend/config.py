@@ -4,9 +4,8 @@ DramaroSub License Server — central configuration.
 ⭐ THIS IS THE FILE YOU EDIT TO CHANGE PRICES, DOMAIN, OR STRIPE KEYS. ⭐
 
 Anything sensitive (Stripe keys, JWT secret) lives in `.env`. Everything else
-(prices, product names, IP-change rate limit, license-key prefix) lives here
-as plain Python so you can change it without touching the database or Stripe
-dashboard.
+(prices, product names, IP-change rate limit, license-key prefix, affiliate
+commission, etc.) lives here as plain Python.
 
 After editing, restart the backend:  `docker compose restart backend`
 """
@@ -17,18 +16,14 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load .env (sits next to this file)
 load_dotenv(Path(__file__).parent / ".env")
 
 
 # =====================================================================
 # 🌐 DOMAIN / PUBLIC URL
 # =====================================================================
-# The public URL of the license-server frontend. Used to build Stripe
-# success/cancel URLs and the email "view your license" links.
 LICENSE_SERVER_DOMAIN = os.environ.get("FRONTEND_URL", "https://license.stream-vault.eu")
 
-# CORS — origins allowed to hit our API. Add staging URLs here as needed.
 CORS_ORIGINS = [
     LICENSE_SERVER_DOMAIN,
     "http://localhost:3001",
@@ -42,7 +37,6 @@ CORS_ORIGINS = [
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 
-# Default currency for all checkouts. Stripe formats this in customer's locale.
 CURRENCY = "usd"
 
 
@@ -56,16 +50,21 @@ CURRENCY = "usd"
 #   price       — DECIMAL in USD (e.g. 1500.00). Stripe gets this in cents.
 #   mode        — "payment" (one-time) or "subscription" (recurring)
 #   interval    — "month" or "year" (only for subscriptions)
+#   tier        — "basic" | "pro" | "enterprise" (groups monthly + annual together)
 #   features    — list[str] shown on pricing page
 #   highlight   — bool, true = "Most Popular" badge on pricing page
+#
+# 💡 Tip: annual tiers commonly offer ~17% off (2 months free). Adjust to taste.
 
 PRODUCTS = {
+    # --- Basic (one-time) ---
     "basic": {
         "id": "basic",
+        "tier": "basic",
         "name": "Basic",
         "description": "StreamVault Basic License — lifetime, single server.",
         "price": 1500.00,
-        "mode": "payment",        # one-time
+        "mode": "payment",
         "interval": None,
         "features": [
             "Lifetime license, no recurring fees",
@@ -77,8 +76,10 @@ PRODUCTS = {
         ],
         "highlight": False,
     },
+    # --- Pro ---
     "pro": {
         "id": "pro",
+        "tier": "pro",
         "name": "Pro",
         "description": "StreamVault Pro — monthly subscription with auto-updates.",
         "price": 99.00,
@@ -92,10 +93,27 @@ PRODUCTS = {
             "Advanced analytics dashboard",
             "Cancel anytime",
         ],
-        "highlight": True,         # ← "Most Popular"
+        "highlight": True,
     },
+    "pro_annual": {
+        "id": "pro_annual",
+        "tier": "pro",
+        "name": "Pro (Annual)",
+        "description": "StreamVault Pro — annual subscription, 2 months free.",
+        "price": 990.00,        # $99 × 12 = $1188; save ~17% = $990 (2 months free)
+        "mode": "subscription",
+        "interval": "year",
+        "features": [
+            "Everything in Pro (monthly)",
+            "🎁 2 months free — $198 saved",
+            "Locked-in pricing for 12 months",
+        ],
+        "highlight": False,
+    },
+    # --- Enterprise ---
     "enterprise": {
         "id": "enterprise",
+        "tier": "enterprise",
         "name": "Enterprise",
         "description": "StreamVault Enterprise — multi-server, premium support.",
         "price": 299.00,
@@ -111,34 +129,66 @@ PRODUCTS = {
         ],
         "highlight": False,
     },
+    "enterprise_annual": {
+        "id": "enterprise_annual",
+        "tier": "enterprise",
+        "name": "Enterprise (Annual)",
+        "description": "StreamVault Enterprise — annual, 2 months free.",
+        "price": 2990.00,        # $299 × 12 = $3588; save ~17% = $2990
+        "mode": "subscription",
+        "interval": "year",
+        "features": [
+            "Everything in Enterprise (monthly)",
+            "🎁 2 months free — $598 saved",
+            "Locked-in pricing for 12 months",
+        ],
+        "highlight": False,
+    },
 }
 
 
 # =====================================================================
 # 🔑 LICENSE KEYS
 # =====================================================================
-# Prefix shown on every key. Keep short and recognizable.
-# Example output: DSB-A2K9F-7XW3R-PQM4D-NHJV8
 LICENSE_KEY_PREFIX = "DSB"
-LICENSE_KEY_GROUPS = 4         # number of 5-char groups after the prefix
+LICENSE_KEY_GROUPS = 4
 LICENSE_KEY_GROUP_LEN = 5
 
-# How often the buyer's StreamVault install pings us to revalidate.
-# (We just suggest this in the buyer-side code — it's not enforced server-side.)
 VALIDATION_PING_INTERVAL_HOURS = 24
-
-# Grace period if the license server is unreachable from the buyer's VPS.
-# (Documented for the buyer-side code. Not enforced here.)
 OFFLINE_GRACE_DAYS = 14
 
 
 # =====================================================================
 # 🔄 IP BINDING POLICY (per license)
 # =====================================================================
-# Customers can self-service change their bound IP from the dashboard.
-# This guards against the same key being shared across many servers.
 IP_CHANGE_LIMIT_PER_MONTH = 3
 IP_CHANGE_WINDOW_DAYS = 30
+
+
+# =====================================================================
+# 🎟️ COUPONS
+# =====================================================================
+# Coupons are created/edited from the admin dashboard at runtime — this value
+# is only the DEFAULT commission for newly created coupons.
+COUPON_MAX_DISCOUNT_PERCENT = 90     # safety cap — no 100%-off freebies
+
+
+# =====================================================================
+# 🤝 AFFILIATE PROGRAM
+# =====================================================================
+# When a customer signs up with ?ref=CODE and later purchases, the affiliate
+# earns a commission.
+AFFILIATE_DEFAULT_COMMISSION_PERCENT = 20   # % of the sale amount
+AFFILIATE_COOKIE_DAYS = 30                  # how long the referral cookie lasts
+AFFILIATE_MIN_PAYOUT_USD = 50.0             # affiliates must accrue this much before payout
+
+
+# =====================================================================
+# 📨 EXPIRY WARNINGS
+# =====================================================================
+# Days before expiry to email the customer.
+EXPIRY_WARNING_DAYS = [7, 2]
+EXPIRY_CHECK_INTERVAL_HOURS = 12
 
 
 # =====================================================================
@@ -149,12 +199,19 @@ JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_TTL_MINUTES = 15
 REFRESH_TOKEN_TTL_DAYS = 30
 
-# Min password length on registration / change.
 MIN_PASSWORD_LENGTH = 8
 
 
 # =====================================================================
-# 📧 SMTP (optional — used for license-issued / expiry-warning emails)
+# 👤 ADMIN SEEDING
+# =====================================================================
+# The account with this email will be auto-promoted to admin on startup.
+# (Create the account normally via the /register page first.)
+ADMIN_EMAIL = os.environ.get("ADMIN_NOTIFY_EMAIL", "").strip().lower()
+
+
+# =====================================================================
+# 📧 SMTP
 # =====================================================================
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587") or "587")
@@ -162,7 +219,6 @@ SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 SMTP_FROM = os.environ.get("SMTP_FROM", "no-reply@stream-vault.eu")
 
-# Where to email new-sale notifications. Blank = disabled.
 ADMIN_NOTIFY_EMAIL = os.environ.get("ADMIN_NOTIFY_EMAIL", "")
 
 
