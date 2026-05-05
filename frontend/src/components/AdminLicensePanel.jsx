@@ -128,10 +128,10 @@ export default function AdminLicensePanel() {
           <p className="mb-2">To configure your license, edit <code className="bg-[#1A1A24] px-1.5 py-0.5 rounded text-[#00E5FF]">/app/backend/.env</code> and add:</p>
           <pre className="bg-black/40 p-3 rounded text-[11px] leading-relaxed">
 {`STREAMVAULT_LICENSE_KEY=DSB-XXXXX-XXXXX-XXXXX-XXXXX
-LICENSE_SERVER_URL=https://dramarosub.ro`}
+LICENSE_SERVER_URL=https://license.stream-vault.eu`}
           </pre>
           <p className="mt-2">
-            Don't have a license? <a href="https://dramarosub.ro/pricing" target="_blank" rel="noopener noreferrer" className="text-[#00E5FF] hover:underline">Buy one here</a>.
+            Don't have a license? <a href="https://license.stream-vault.eu/pricing" target="_blank" rel="noopener noreferrer" className="text-[#00E5FF] hover:underline">Buy one here</a>.
           </p>
         </div>
       )}

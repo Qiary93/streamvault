@@ -20,7 +20,7 @@ services:
     env_file: .env
     environment:
       MONGO_URL: mongodb://mongo:27017
-      DB_NAME: ${DB_NAME:-dramarosub_license}
+      DB_NAME: ${DB_NAME:-stream_vault_license}
     depends_on: [mongo]
     expose: ["8000"]
     networks: [dsb]
@@ -30,7 +30,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        REACT_APP_BACKEND_URL: ${FRONTEND_URL:-https://dramarosub.ro}
+        REACT_APP_BACKEND_URL: ${FRONTEND_URL:-https://license.stream-vault.eu}
     container_name: dsb-frontend
     restart: unless-stopped
     expose: ["80"]

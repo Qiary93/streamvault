@@ -26,7 +26,7 @@ load_dotenv(Path(__file__).parent / ".env")
 # =====================================================================
 # The public URL of the license-server frontend. Used to build Stripe
 # success/cancel URLs and the email "view your license" links.
-LICENSE_SERVER_DOMAIN = os.environ.get("FRONTEND_URL", "https://dramarosub.ro")
+LICENSE_SERVER_DOMAIN = os.environ.get("FRONTEND_URL", "https://license.stream-vault.eu")
 
 # CORS — origins allowed to hit our API. Add staging URLs here as needed.
 CORS_ORIGINS = [
@@ -160,7 +160,7 @@ SMTP_HOST = os.environ.get("SMTP_HOST", "")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587") or "587")
 SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
-SMTP_FROM = os.environ.get("SMTP_FROM", "no-reply@dramarosub.ro")
+SMTP_FROM = os.environ.get("SMTP_FROM", "no-reply@stream-vault.eu")
 
 # Where to email new-sale notifications. Blank = disabled.
 ADMIN_NOTIFY_EMAIL = os.environ.get("ADMIN_NOTIFY_EMAIL", "")
@@ -170,4 +170,4 @@ ADMIN_NOTIFY_EMAIL = os.environ.get("ADMIN_NOTIFY_EMAIL", "")
 # 🗄️ DATABASE
 # =====================================================================
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
-DB_NAME = os.environ.get("DB_NAME", "dramarosub_license")
+DB_NAME = os.environ.get("DB_NAME", "stream_vault_license")

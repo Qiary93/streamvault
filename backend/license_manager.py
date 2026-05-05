@@ -6,7 +6,7 @@ license is still active and the bound IP matches.
 
 Configuration in `/app/backend/.env`:
     STREAMVAULT_LICENSE_KEY=DSB-XXXXX-XXXXX-XXXXX-XXXXX
-    LICENSE_SERVER_URL=https://dramarosub.ro
+    LICENSE_SERVER_URL=https://license.stream-vault.eu
 
 Behavior:
 - On startup: validates once. If invalid, sets status accordingly (does NOT crash).
@@ -35,7 +35,7 @@ except ImportError:        # httpx is optional — fall back to "license check d
 
 logger = logging.getLogger("license")
 
-LICENSE_SERVER_URL = os.environ.get("LICENSE_SERVER_URL", "https://dramarosub.ro")
+LICENSE_SERVER_URL = os.environ.get("LICENSE_SERVER_URL", "https://license.stream-vault.eu")
 LICENSE_KEY = os.environ.get("STREAMVAULT_LICENSE_KEY", "").strip()
 VALIDATION_INTERVAL_HOURS = 24
 OFFLINE_GRACE_DAYS = 14

@@ -4,7 +4,7 @@ A complete license-selling website for self-hosted software. Customers register,
 buy licenses through Stripe, bind them to their server IP, and self-service their
 account. The product (StreamVault) pings this server every 24 hours to validate.
 
-**Live domain:** https://dramarosub.ro (configurable in `backend/config.py`)
+**Live domain:** https://license.stream-vault.eu (configurable in `backend/config.py`)
 
 ---
 
@@ -15,7 +15,7 @@ account. The product (StreamVault) pings this server every 24 hours to validate.
 Open that file and you can edit:
 
 - ✅ **Stripe keys** — `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` (loaded from `.env`)
-- ✅ **Domain** — `LICENSE_SERVER_DOMAIN` (default `dramarosub.ro`)
+- ✅ **Domain** — `LICENSE_SERVER_DOMAIN` (default `license.stream-vault.eu`)
 - ✅ **All prices** — `PRODUCTS` dict (Basic / Pro / Enterprise)
 - ✅ **IP-change limit** — `IP_CHANGE_LIMIT_PER_MONTH` (default 3)
 - ✅ **License key prefix** — `LICENSE_KEY_PREFIX` (default `DSB-`)
@@ -29,19 +29,56 @@ the fly because we use Stripe's `price_data` (dynamic prices), not Stripe Price 
 
 ---
 
-## 🚀 Quick start
+## 🚀 Quick start (one command on a fresh VPS)
 
 ```bash
-# 1. Configure
-cp .env.example .env
-# Edit .env — set STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, JWT_SECRET, MONGO_URL
+# 1. Log in to your domain registrar and add this DNS record
+#    (replace VPS-PUBLIC-IP with your actual server IP):
+#
+#       Type: A
+#       Name: license                        ← the subdomain
+#       Host: license.stream-vault.eu
+#       Value: VPS-PUBLIC-IP
+#       TTL: 300
+#
+# 2. SSH into your Ubuntu 24.04 VPS and clone this repo
+git clone https://github.com/YOUR-USER/stream-vault-license.git
+cd stream-vault-license
 
-# 2. Boot
-docker compose up -d
-
-# 3. Visit
-open https://dramarosub.ro
+# 3. Run the installer (replace with your real email)
+sudo bash scripts/install.sh license.stream-vault.eu you@yourmail.com
 ```
+
+The installer will:
+1. Install Docker + certbot if missing
+2. **Verify DNS** — if `license.stream-vault.eu` doesn't resolve to this VPS, it prints the exact A record to create and exits cleanly
+3. Open ports 80 / 443 in UFW
+4. Generate fresh JWT + Mongo secrets into `.env`
+5. Template `nginx.conf` with your domain
+6. Issue a Let's Encrypt SSL cert
+7. Run `docker compose up -d`
+
+**Total time: about 3 minutes** once DNS is pointed.
+
+After install, edit `.env` to add your Stripe keys, then:
+
+```bash
+docker compose --env-file .env restart backend
+```
+
+---
+
+## 🌐 Changing the domain later
+
+Just re-run `scripts/install.sh` with the new domain:
+
+```bash
+sudo bash scripts/install.sh license.newdomain.com you@yourmail.com
+```
+
+The script is idempotent — it re-templates nginx, re-issues SSL for the new domain,
+preserves your database, and updates only the fields in `.env` that depend on the
+domain (`FRONTEND_URL`, `SMTP_FROM`). Your prices and secrets stay put.
 
 ---
 
@@ -113,7 +150,7 @@ Every StreamVault install has this in `/app/backend/.env`:
 
 ```
 STREAMVAULT_LICENSE_KEY=DSB-XXXXX-XXXXX-XXXXX-XXXXX
-LICENSE_SERVER_URL=https://dramarosub.ro
+LICENSE_SERVER_URL=https://license.stream-vault.eu
 ```
 
 The buyer-side module `/app/backend/license_manager.py` (in the StreamVault repo,
@@ -164,7 +201,7 @@ git init
 git add .
 git commit -m "Initial commit — DramaroSub license server"
 git branch -M main
-git remote add origin git@github.com:YOUR-USER/dramarosub-license.git
+git remote add origin git@github.com:YOUR-USER/stream-vault-license.git
 git push -u origin main
 ```
 

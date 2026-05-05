@@ -4,7 +4,7 @@ WORKDIR /app
 COPY package.json yarn.lock* ./
 RUN yarn install --frozen-lockfile || yarn install
 
-ARG REACT_APP_BACKEND_URL=https://dramarosub.ro
+ARG REACT_APP_BACKEND_URL=https://license.stream-vault.eu
 ENV REACT_APP_BACKEND_URL=$REACT_APP_BACKEND_URL
 
 COPY . .

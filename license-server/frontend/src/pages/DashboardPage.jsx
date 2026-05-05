@@ -108,7 +108,7 @@ function LicenseCard({ lic, onIpChanged }) {
           <pre className="mt-2 bg-card p-3 rounded text-[11px] leading-relaxed overflow-x-auto">
 {`# Add to /app/backend/.env on your StreamVault VPS:
 STREAMVAULT_LICENSE_KEY=${lic.license_key}
-LICENSE_SERVER_URL=https://dramarosub.ro
+LICENSE_SERVER_URL=https://license.stream-vault.eu
 
 # Then restart the backend:
 sudo supervisorctl restart backend`}
