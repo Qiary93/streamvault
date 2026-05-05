@@ -48,6 +48,12 @@ dump.rdb
 
 # Python
 __pycache__/
+
+# License-server is a separate product — kept here only for local development.
+# DO NOT push to the StreamVault GitHub repo. Distribute via the tarball at
+# /app/frontend/public/stream-vault-license.tar.gz instead.
+/license-server/
+/frontend/public/stream-vault-license.tar.gz
 *pyc*
 venv/
 .venv/
