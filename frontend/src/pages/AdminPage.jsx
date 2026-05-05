@@ -12,6 +12,7 @@ import AdminEmailTemplates from '../components/AdminEmailTemplates';
 import AdminAutoPayoutSweep from '../components/AdminAutoPayoutSweep';
 import AdminWebsiteAdmin from '../components/AdminWebsiteAdmin';
 import AdminUpdatesPanel from '../components/AdminUpdatesPanel';
+import AdminLicensePanel from '../components/AdminLicensePanel';
 import { toast } from 'sonner';
 import axios from 'axios';
 

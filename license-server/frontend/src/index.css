@@ -1,0 +1,11 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root { height: 100%; }
+body {
+  font-family: -apple-system, "SF Pro Display", "Inter", system-ui, sans-serif;
+  background: radial-gradient(ellipse at top, #1A1A2C 0%, #0A0A0F 60%);
+}
+
+::selection { background: #00E5FF; color: #000; }

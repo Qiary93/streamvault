@@ -5497,6 +5497,24 @@ api_router.include_router(
 )
 
 
+# ============= ADMIN — LICENSE STATUS =============
+import license_manager  # noqa: E402
+
+
+@api_router.get("/admin/license/status")
+async def admin_license_status(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return license_manager.get_license_status()
+
+
+@api_router.post("/admin/license/revalidate")
+async def admin_license_revalidate(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return await license_manager.validate_now()
+
+
 
 
 
@@ -5861,6 +5879,13 @@ async def startup():
     # Start auto-payout sweep loop (no-op unless admin enables it)
     asyncio.create_task(auto_payout_sweep_loop())
     logger.info("Auto-payout sweep loop scheduled")
+    # Start background license validator (24h ping to license server)
+    try:
+        import license_manager
+        asyncio.create_task(license_manager.start_background_validator())
+        logger.info("License validator scheduled")
+    except Exception as e:
+        logger.warning(f"License validator failed to start: {e}")
 
 @app.on_event("shutdown")
 async def shutdown():
