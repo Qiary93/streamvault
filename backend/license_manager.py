@@ -37,6 +37,8 @@ logger = logging.getLogger("license")
 
 LICENSE_SERVER_URL = os.environ.get("LICENSE_SERVER_URL", "https://license.stream-vault.eu")
 LICENSE_KEY = os.environ.get("STREAMVAULT_LICENSE_KEY", "").strip()
+# Set ENFORCE_LICENSE=false in the env to disable hard enforcement (development).
+ENFORCE_LICENSE = os.environ.get("ENFORCE_LICENSE", "true").strip().lower() not in ("0", "false", "no", "off")
 VALIDATION_INTERVAL_HOURS = 24
 OFFLINE_GRACE_DAYS = 14
 HTTP_TIMEOUT = 10.0
@@ -162,6 +164,11 @@ def get_license_status() -> dict:
 
 def is_license_valid() -> bool:
     return bool(_state.get("valid"))
+
+
+def is_enforced() -> bool:
+    """Returns True if hard enforcement is active in this install."""
+    return ENFORCE_LICENSE
 
 
 async def start_background_validator() -> None:

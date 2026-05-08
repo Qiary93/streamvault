@@ -2,6 +2,8 @@ import React from 'react';
 import { BrowserRouter, Routes, Route, useLocation, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Toaster } from './components/ui/sonner';
+import UnlicensedOverlay from './components/UnlicensedOverlay';
+import './utils/licenseInterceptor';
 
 // Pages
 import HomePage from './pages/HomePage';
@@ -105,6 +107,7 @@ function App() {
         <AppRouter />
         <LevelUpListener />
         <Toaster position="top-right" />
+        <UnlicensedOverlay />
       </BrowserRouter>
     </AuthProvider>
   );

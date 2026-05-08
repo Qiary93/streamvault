@@ -5856,6 +5856,51 @@ async def delete_tier_badge(tier_id: str, user: dict = Depends(get_current_user)
 # Include the router
 app.include_router(api_router)
 
+
+# ============= LICENSE ENFORCEMENT MIDDLEWARE (Level C — Hard) =============
+# When ENFORCE_LICENSE=true (default) and license_manager reports an invalid
+# license, every API call is blocked with 503 except a small allow-list:
+#   • /api/auth/login, /api/auth/me, /api/auth/refresh, /api/auth/logout
+#   • /api/admin/license/{status,revalidate}    — so admins can fix it
+#   • /api/healthz                              — for orchestrators
+# The response includes `code: "UNLICENSED"` so the frontend can render its
+# fullscreen "Unlicensed install" overlay.
+import license_manager as _lm  # noqa: E402
+
+_LICENSE_ALLOW_PREFIXES = (
+    "/api/auth/login",
+    "/api/auth/me",
+    "/api/auth/refresh",
+    "/api/auth/logout",
+    "/api/admin/license/",
+    "/api/healthz",
+)
+
+
+@app.middleware("http")
+async def license_enforcement(request, call_next):
+    if not _lm.is_enforced():
+        return await call_next(request)
+    path = request.url.path
+    # Only gate API routes — let static assets / docs flow.
+    if not path.startswith("/api/"):
+        return await call_next(request)
+    if any(path.startswith(p) for p in _LICENSE_ALLOW_PREFIXES):
+        return await call_next(request)
+    if _lm.is_license_valid():
+        return await call_next(request)
+    from fastapi.responses import JSONResponse
+    status = _lm.get_license_status()
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": status.get("message") or "This StreamVault install requires a valid license.",
+            "code": "UNLICENSED",
+            "license_status": status.get("status", "unknown"),
+        },
+    )
+
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
