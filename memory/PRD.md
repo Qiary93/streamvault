@@ -10,6 +10,15 @@ Build a Kick.com-style livestream platform: real-time video (LiveKit/WebRTC), We
 
 ## What's Implemented
 
+### Feb 2026 — License Server installer nginx auto-fix bugfix
+- **Root cause identified & fixed** for the `install.sh` "auto-fix" failure during coexist-mode install (license server alongside StreamVault):
+  - The script prepended an ACME `default_server` block to `streamvault.conf.template`, then re-rendered it via `envsubst` to **`/etc/nginx/conf.d/default.conf`**.
+  - But `nginx:alpine`'s entrypoint already renders `streamvault.conf.template` → **`/etc/nginx/conf.d/streamvault.conf`** (it strips only the trailing `.template`).
+  - Result: both files coexisted → duplicate `limit_req_zone "api_zone"` directives → `nginx -t` failed with `"already bound to key"` → script reverted.
+- **Fix** (`/app/license-server/scripts/install.sh`): write the re-rendered config to `streamvault.conf` (overwriting the original render), so only one config exists. Added an atomic `.new` + `mv` swap, plus `nginx -t` output is now surfaced on failure for easier debugging, and the original render is restored on revert.
+- Reproduced + verified locally with a Docker-less `nginx -t` harness (`/tmp/repro2/test_dup.sh` reproduces, `/tmp/repro3/test_fix.sh` validates the fix).
+- Repackaged `/app/frontend/public/stream-vault-license.tar.gz` (now contains the patched installer).
+
 ### Feb 2026 — Rate-limit persistence + Raid staleness re-check
 - **`_RESET_PWD_IP_HITS` migrated to MongoDB** (`db.rate_limit_hits`) for multi-worker safety. Sliding-window count + a TTL index on `expires_at` (auto-cleanup), so the 5-attempts-per-15-min limit is now consistent across all uvicorn workers / pod restarts. The helper is now async and fails open on a Mongo blip (never blocks legit users).
 - **Raid staleness re-check**: `POST /api/streams/{id}/raid` re-verifies the target is still `is_live && broadcasting` immediately before inserting the raid doc + broadcasting. Returns `409 Conflict` with a friendly message when the target went offline between the initial lookup and the broadcast (instead of the old behavior of redirecting hundreds of viewers to a dead stream).
