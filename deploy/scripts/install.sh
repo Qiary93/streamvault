@@ -154,6 +154,71 @@ if [[ -z "${MONGO_ROOT_PASSWORD:-}" || "$MONGO_ROOT_PASSWORD" == CHANGE_ME* ]]; 
 fi
 
 # -----------------------------------------------------------------------------
+# 3b2. Interactive prompts — Stripe keys + StreamVault License code.
+# -----------------------------------------------------------------------------
+# Only prompts for values that are still empty in .env, so re-running this
+# installer never overwrites keys you've already set. To re-edit existing
+# values, use:  sudo bash deploy/scripts/set-keys.sh
+prompt_env_value() {
+    # prompt_env_value VAR_NAME "Friendly label" "Help / where to get it"
+    local var="$1" label="$2" help="${3:-}"
+    local current="${!var:-}"
+
+    # Skip if already set (and not the placeholder).
+    if [[ -n "$current" && "$current" != CHANGE_ME* ]]; then
+        return
+    fi
+
+    printf '\n\033[1m%s\033[0m\n' "$label"
+    [[ -n "$help" ]] && printf '\033[2m%s\033[0m\n' "$help"
+    printf '  > '
+    local value=""
+    if [[ -t 0 ]]; then
+        read -r value
+    else
+        read -r value </dev/tty 2>/dev/null || value=""
+    fi
+    value="${value#"${value%%[![:space:]]*}"}"        # ltrim
+    value="${value%"${value##*[![:space:]]}"}"        # rtrim
+
+    if [[ -z "$value" ]]; then
+        printf '\033[1;33m  (skipped — you can set this later with: sudo bash %s/deploy/scripts/set-keys.sh)\033[0m\n' "$PROJECT_ROOT"
+        return
+    fi
+
+    # Replace or append the line. Use a delimiter that won't appear in keys.
+    if grep -q "^${var}=" "$ENV_FILE"; then
+        # Escape the value for sed (handle |, &, /)
+        local esc_value
+        esc_value=$(printf '%s' "$value" | sed 's:[\\/&|]:\\&:g')
+        sed -i "s|^${var}=.*|${var}=${esc_value}|" "$ENV_FILE"
+    else
+        echo "${var}=${value}" >> "$ENV_FILE"
+    fi
+    export "$var=$value"
+    printf '\033[1;32m  ✓ saved to %s\033[0m\n' "$ENV_FILE"
+}
+
+echo
+printf '\033[1;36m═══════════════════════════════════════════════════════════════\033[0m\n'
+printf '\033[1;36m  Optional API keys\033[0m\n'
+printf '\033[1;36m═══════════════════════════════════════════════════════════════\033[0m\n'
+printf '\033[2mLeave any field blank to skip. You can set/update them later by running:\033[0m\n'
+printf '\033[2m  sudo bash %s/deploy/scripts/set-keys.sh\033[0m\n' "$PROJECT_ROOT"
+
+prompt_env_value STRIPE_API_KEY \
+    "Stripe secret API key" \
+    "Get it from https://dashboard.stripe.com/apikeys (use a restricted key in prod). Starts with sk_live_… or sk_test_…"
+
+prompt_env_value STRIPE_CONNECT_WEBHOOK_SECRET \
+    "Stripe Connect webhook signing secret" \
+    "Stripe → Developers → Webhooks → endpoint /api/webhook/stripe/connect → 'Signing secret'. Starts with whsec_…"
+
+prompt_env_value STREAMVAULT_LICENSE_KEY \
+    "StreamVault License code" \
+    "Buy or retrieve from https://license.stream-vault.eu/dashboard. Format: SVL-XXXXX-XXXXX-XXXXX-XXXXX (any prefix works)."
+
+# -----------------------------------------------------------------------------
 # 3c. Detect MongoDB auth-mismatch from older installs.
 # -----------------------------------------------------------------------------
 # Background: MongoDB only reads MONGO_INITDB_ROOT_USERNAME/PASSWORD when the
@@ -446,7 +511,10 @@ cat <<EOF
   Next steps:
     1. Log in at https://$DOMAIN/admin and change the admin password.
     2. Configure SMTP in Admin → Email settings.
-    3. Paste your LiveKit / Stripe / S3 keys in $ENV_FILE, then
+    3. Update Stripe keys / License code anytime (no .env editing needed):
+         sudo bash $DEPLOY_DIR/scripts/set-keys.sh           # interactive
+         sudo bash $DEPLOY_DIR/scripts/set-keys.sh --show    # see current
+    4. To change LiveKit / S3 keys, edit $ENV_FILE then
        'sudo systemctl restart streamvault' to pick them up.
 =============================================================================
 EOF
